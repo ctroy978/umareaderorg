@@ -7,8 +7,11 @@ from nicegui import app as nicegui_app, ui
 # Import pages to register their @ui.page routes
 importlib.import_module('app.pages.login')
 importlib.import_module('app.pages.dashboard')
+importlib.import_module('app.pages.welcome')
+importlib.import_module('app.pages.placement')
+importlib.import_module('app.pages.placement_result')
 
-from app.supabase_client import exchange_code_for_session
+from app.supabase_client import exchange_code_for_session, get_profile
 from utils.config import STORAGE_SECRET
 
 
@@ -25,7 +28,14 @@ async def auth_callback(request: Request):
             'user_id': result.user.id,
             'email': result.user.email,
         })
-        return RedirectResponse('/dashboard')
+        user_id = result.user.id
+        try:
+            profile = get_profile(user_id)
+            if profile and profile.get('onboarded'):
+                return RedirectResponse('/dashboard')
+        except Exception:
+            pass
+        return RedirectResponse('/welcome')
     except Exception as e:
         return RedirectResponse(f'/login?error={e}')
 
