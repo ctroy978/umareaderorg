@@ -8,3 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets
+.env
+.env.*
+
+# NiceGUI
+.nicegui/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
