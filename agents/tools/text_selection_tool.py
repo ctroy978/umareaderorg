@@ -30,7 +30,7 @@ def _dummy_vocab_format(vocab_words: list[dict]) -> list[dict]:
     return list(vocab_words)
 
 
-def select_stretch_text_tool(student_id: str, session_id: str | None = None, access_token: str | None = None) -> dict:
+def select_stretch_text_tool(student_id: str, session_id: str | None = None, access_token: str | None = None, topic_override: str | None = None) -> dict:
     """
     Run the text_selection agent to generate a personalized reading passage.
 
@@ -40,7 +40,7 @@ def select_stretch_text_tool(student_id: str, session_id: str | None = None, acc
     Falls back to dummy content on any exception.
     """
     start = time.monotonic()
-    input_json = {"student_id": student_id, "session_id": session_id}
+    input_json = {"student_id": student_id, "session_id": session_id, "topic_override": topic_override}
 
     try:
         profile = get_profile(student_id, access_token=access_token)
@@ -55,7 +55,7 @@ def select_stretch_text_tool(student_id: str, session_id: str | None = None, acc
             "student_id": student_id,
             "reading_level": reading_level,
             "interests": interests,
-            "topic": None,
+            "topic": topic_override,
             "generated_text": None,
             "title": None,
             "vocab": None,

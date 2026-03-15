@@ -19,19 +19,23 @@ Return ONLY valid JSON (no markdown, no code fences):
       "type": "multiple_choice",
       "text": "Question text here?",
       "choices": ["Choice A", "Choice B", "Choice C", "Choice D"],
-      "correct_index": 1
+      "correct_index": 1,
+      "explanation": "why the correct answer is correct, citing the passage"
     },
     {
       "id": "m2",
       "type": "multiple_choice",
       "text": "Question text here?",
       "choices": ["Choice A", "Choice B", "Choice C", "Choice D"],
-      "correct_index": 0
+      "correct_index": 0,
+      "explanation": "why the correct answer is correct, citing the passage"
     },
     {
       "id": "m3",
       "type": "short_answer",
-      "text": "Question text here?"
+      "text": "Question text here?",
+      "source_span": "the 1-2 sentences from the passage most relevant to this question",
+      "key_points": ["point 1", "point 2"]
     }
   ]
 }"""

@@ -32,3 +32,8 @@ def get_planner_llm() -> ChatXAI:
         api_key=os.environ["XAI_API_KEY"],
         temperature=0.7,
     )
+
+
+@lru_cache(maxsize=1)
+def get_feedback_llm() -> ChatXAI:
+    return ChatXAI(model="grok-3", api_key=os.environ["XAI_API_KEY"], temperature=0.3)

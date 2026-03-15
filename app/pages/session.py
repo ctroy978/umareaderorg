@@ -4,30 +4,39 @@ import html as html_lib
 
 from nicegui import app, ui
 
-from app.data.session_content import (
-    GIST_FEEDBACK,
-    MASTERY_QUESTIONS,
-    PASSAGE_SECTIONS as _FALLBACK_SECTIONS,
-    PASSAGE_TITLE as _FALLBACK_TITLE,
-    READING_PAUSE_PROMPTS,
-    REFLECTION_PROMPT,
-    VOCAB_WORDS as _FALLBACK_VOCAB_WORDS,
-)
 from app.supabase_client import (
     complete_session,
     create_session,
+    create_session_bundle,
+    fail_session_bundle,
+    get_active_bundle,
     get_active_session,
+    get_profile,
+    get_session_bundle,
     save_session_response,
     update_session_step,
 )
-from agents.tools.text_selection_tool import select_stretch_text_tool
-from agents.tools.comprehension_coach_tool import coach_comprehension_pause
-from agents.tools.assessment_tool import generate_mastery_questions, assess_gist_and_mastery
+from agents.tools.bundle_generator import generate_session_bundle
+from agents.tools.feedback_tool import get_feedback
 
 TOTAL_STEPS = 4
 STEP_LABELS = ["Vocab Preview", "Supported Reading", "Gist & Reflection", "Mastery Check"]
 
-_STRATEGY_NAMES = ["main idea", "inference", "question generation"]
+_TOPIC_CATEGORIES = [
+    {"label": "Science", "value": "science and nature"},
+    {"label": "History", "value": "history and historical events"},
+    {"label": "Sports", "value": "sports and athletics"},
+    {"label": "Animals", "value": "animals and wildlife"},
+    {"label": "Technology", "value": "technology and inventions"},
+    {"label": "Mystery", "value": "mystery and detective stories"},
+    {"label": "Adventure", "value": "adventure and exploration"},
+    {"label": "Nature", "value": "environment and ecosystems"},
+    {"label": "Space", "value": "space and astronomy"},
+    {"label": "Biography", "value": "biography and remarkable people"},
+]
+
+# Stuck-bundle timeout: treat 'generating' bundles older than this as failed
+_STUCK_BUNDLE_MINUTES = 5
 
 
 @ui.page('/session')
@@ -40,25 +49,24 @@ async def session_page():
 
     state = {
         'session_id': None,
+        'bundle_id': None,
+        'bundle': None,
         'step': 0,          # 0=vocab, 1=reading, 2=gist, 3=mastery
         'passage_title': None,
         'passage_sections': None,
-        'vocab_words': None,   # Phase 4 format: [{word, sentence, parallel_sentence}]
+        'vocab_words': None,
         'vocab_main_queue': [],
         'vocab_retry_queue': [],
         'vocab_word_results': {},
         'vocab_total_words': 0,
-        'vocab_results': [],   # {word, correct} — kept for legacy compat
+        'vocab_results': [],
         'reading_section': 0,
         'mastery_idx': 0,
         'responses': [],
         'gist_done': False,
-        'mastery_questions': None,      # populated during reading-to-gist transition
-        'reading_level': 'Grade 6',     # populated in _load_content
-        '_last_gist': '',               # populated in render_gist_step, used by mastery scorer
+        'reading_level': 'Grade 6',
+        '_last_gist': '',
     }
-    # Strategy rotation: same strategy type for all sessions on the same day
-    state['session_strategy_idx'] = datetime.date.today().toordinal() % 3
 
     # ── Top-level layout ──────────────────────────────────────────────────────
     _CIRCLE_BASE = (
@@ -116,12 +124,112 @@ async def session_page():
         except Exception:
             pass
 
-    def _show_loading_spinner(message: str = 'Personalizing your reading session…'):
+    def _load_bundle_into_state(bundle: dict):
+        state['bundle'] = bundle
+        state['bundle_id'] = bundle['id']
+        state['passage_title'] = bundle['passage_title']
+        state['passage_sections'] = bundle['passage_sections']
+        vocab = bundle.get('vocab_questions') or []
+        state['vocab_words'] = vocab
+        state['vocab_main_queue'] = list(vocab)
+        state['vocab_total_words'] = len(vocab)
+
+    # ── Topic picker ──────────────────────────────────────────────────────────
+
+    def render_topic_picker():
+        content_area.clear()
+        update_progress(0, 0.0)
+        selected_topic = {'value': None}
+
+        with content_area:
+            ui.label("What would you like to read about today?").classes('text-xl font-bold text-center')
+            ui.label("Choose a category or type your own topic.").classes('text-gray-500 text-center text-sm')
+
+            with ui.grid(columns=2).classes('w-full gap-3 mt-2'):
+                for cat in _TOPIC_CATEGORIES:
+                    btn = ui.button(cat['label']).props('outline').classes('w-full')
+
+                    def _make_click(val, b):
+                        def _click():
+                            selected_topic['value'] = val
+                            # Visual: reset all, highlight selected
+                            for child in content_area:
+                                pass  # NiceGUI grid manages styling
+                            b.props('color=primary')
+                        return _click
+
+                    btn.on_click(_make_click(cat['value'], btn))
+
+            ui.label("Or enter your own topic:").classes('text-sm text-gray-500 mt-2')
+            custom_input = ui.input(placeholder="e.g. volcanoes, chess, ancient Egypt…").classes('w-full')
+
+            error_label = ui.label('').classes('text-red-500 text-sm hidden')
+
+            def _on_start():
+                topic = custom_input.value.strip() or selected_topic['value']
+                if not topic:
+                    error_label.set_text('Please choose a category or enter a topic.')
+                    error_label.classes(remove='hidden')
+                    return
+                error_label.classes(add='hidden')
+                asyncio.create_task(_on_topic_selected(topic))
+
+            ui.button('Start Reading →', on_click=_on_start).props('color=primary').classes('w-full mt-2')
+
+    # ── Loading screen ────────────────────────────────────────────────────────
+
+    def _show_loading_screen(topic: str):
         content_area.clear()
         with content_area:
             with ui.column().classes('items-center w-full gap-4 py-16'):
                 ui.spinner(size='xl')
-                ui.label(message).classes('text-gray-500 text-lg text-center')
+                ui.label('Preparing your session…').classes('text-gray-700 text-xl font-semibold text-center')
+                ui.label(f'Topic: {topic}').classes('text-gray-500 text-base text-center')
+                ui.label('This takes about 15–30 seconds. You\'ll only wait once.').classes(
+                    'text-gray-400 text-sm text-center italic'
+                )
+
+    # ── Topic selected → generate bundle ─────────────────────────────────────
+
+    async def _on_topic_selected(topic: str):
+        bundle_id = create_session_bundle(user_id, topic)
+        state['bundle_id'] = bundle_id
+        _show_loading_screen(topic)
+
+        profile = get_profile(user_id, access_token)
+        reading_level = (profile or {}).get('reading_level', 'Grade 6')
+        state['reading_level'] = reading_level
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: generate_session_bundle(bundle_id, user_id, topic, reading_level, access_token),
+        )
+
+        bundle = get_session_bundle(bundle_id)
+        if bundle and bundle.get('status') == 'ready':
+            _load_bundle_into_state(bundle)
+            try:
+                sid = create_session(user_id, bundle_id=bundle_id)
+                state['session_id'] = sid
+            except Exception:
+                ui.notify('Could not start session. Please try again.', type='negative')
+                render_topic_picker()
+                return
+            render_vocab_step()
+        else:
+            _show_bundle_error()
+
+    def _show_bundle_error():
+        content_area.clear()
+        with content_area:
+            with ui.column().classes('items-center w-full gap-4 py-16'):
+                ui.icon('error_outline', size='3rem').classes('text-red-500')
+                ui.label('Something went wrong generating your session.').classes(
+                    'text-gray-700 text-lg font-semibold text-center'
+                )
+                ui.label('Please try again with a different topic.').classes('text-gray-500 text-center')
+                ui.button('Try Again', on_click=render_topic_picker).props('color=primary')
 
     # ── Step renderers ────────────────────────────────────────────────────────
 
@@ -161,22 +269,19 @@ async def session_page():
                     'text-xs text-gray-400 uppercase tracking-wide'
                 )
             else:
-                ui.label("Great effort — let's try this one again!").classes(
+                ui.label("Let's try this one again!").classes(
                     'text-xs text-orange-500 uppercase tracking-wide font-medium'
                 )
 
             with ui.card().classes('w-full p-6 gap-4'):
-                # Word — always visible
                 ui.label(word).classes('text-3xl font-bold text-primary')
 
-                # Definition — fades out on transition
                 def_div = ui.column().classes('gap-1 transition-opacity duration-700')
                 with def_div:
                     ui.label(definition).classes(
                         'text-base text-gray-700 leading-relaxed italic'
                     )
 
-                # Example sentence — always visible
                 ui.label('Example from the passage:').classes(
                     'text-xs text-gray-400 uppercase tracking-wide mt-2'
                 )
@@ -191,7 +296,6 @@ async def session_page():
 
                 ui.separator()
 
-                # Presentation controls
                 ready_div = ui.column().classes('gap-2 items-start')
                 with ready_div:
                     ui.label('Read the definition above, then proceed when ready.').classes(
@@ -201,7 +305,6 @@ async def session_page():
                         "I'm ready →", on_click=lambda: _go_to_question()
                     ).props('color=primary outline')
 
-                # MCQ panel — hidden until definition fades out
                 question_div = ui.column().classes('gap-3 hidden')
                 with question_div:
                     ui.label(
@@ -216,7 +319,6 @@ async def session_page():
                         'Submit Answer', on_click=lambda: _submit_answer()
                     ).props('color=primary')
 
-                # Feedback panel — hidden until answer submitted
                 feedback_div = ui.column().classes('gap-3 hidden')
 
         def _go_to_question():
@@ -308,7 +410,7 @@ async def session_page():
                         ui.label(label).classes(f'text-sm font-medium {color}')
                 if flagged:
                     ui.label(
-                        "Don't worry about flagged words — you may see them again in a future session."
+                        "Flagged words may appear again in a future session."
                     ).classes('text-sm text-gray-400 italic text-center')
                 ui.label(
                     "Now let's read the passage together. Take your time!"
@@ -321,18 +423,26 @@ async def session_page():
     def render_reading_step():
         content_area.clear()
         sec_idx = state['reading_section']
-        sections = state['passage_sections'] or _FALLBACK_SECTIONS
-        title = state['passage_title'] or _FALLBACK_TITLE
-        update_progress(1, sec_idx / len(sections))
+        sections = state['passage_sections'] or []
+        title = state['passage_title'] or ''
+        update_progress(1, sec_idx / max(len(sections), 1))
 
         if sec_idx >= len(sections):
             _show_reading_transition()
             return
 
         section = sections[sec_idx]
-        strategy = _STRATEGY_NAMES[state['session_strategy_idx']]
-        level = state['reading_level']
-        prompt_holder = {'text': None}
+        bundle = state['bundle'] or {}
+        comp_questions = bundle.get('comprehension_questions') or []
+
+        # Load pre-generated question for this section
+        if sec_idx < len(comp_questions):
+            comp_q = comp_questions[sec_idx]
+            prompt_text = comp_q.get('prompt', '')
+            rubric = comp_q.get('rubric', '')
+        else:
+            prompt_text = 'What is this section mainly about?'
+            rubric = ''
 
         with content_area:
             with ui.card().classes('w-full p-5 gap-3'):
@@ -343,15 +453,8 @@ async def session_page():
 
             with ui.card().classes('w-full p-5 gap-3'):
                 ui.label('Reading Check').classes('text-xs text-gray-400 uppercase tracking-wide')
-
-                # Prompt area — starts with spinner while agent generates
-                prompt_spinner_row = ui.row().classes('items-center gap-2')
-                with prompt_spinner_row:
-                    ui.spinner(size='sm')
-                    ui.label('Preparing your question…').classes('text-sm text-gray-500')
-
-                prompt_label = ui.label('').classes('text-base font-medium hidden')
-                answer_input = ui.textarea(placeholder='Your thoughts…').classes('w-full hidden')
+                ui.label(prompt_text).classes('text-base font-medium')
+                answer_input = ui.textarea(placeholder='Your thoughts…').classes('w-full')
 
                 spinner_row = ui.row().classes('items-center gap-2 hidden')
                 with spinner_row:
@@ -360,73 +463,44 @@ async def session_page():
 
                 feedback_col = ui.column().classes('w-full gap-2 hidden')
 
+                def _on_submit_reading():
+                    if not answer_input.value.strip():
+                        ui.notify('Please write something before submitting.', type='warning')
+                        return
+                    answer_input.disable()
+                    submit_btn.disable()
+                    spinner_row.classes(remove='hidden')
+                    asyncio.create_task(_evaluate_reading(answer_input.value))
+
                 submit_btn = ui.button(
-                    'Submit', on_click=lambda: _on_submit_reading()
-                ).props('color=primary').classes('hidden')
-
-        async def _load_prompt():
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: coach_comprehension_pause(
-                    section['text'], None, strategy, level,
-                    state['session_id'], user_id,
-                ),
-            )
-            prompt_holder['text'] = result['prompt']
-            prompt_spinner_row.classes(add='hidden')
-            prompt_label.set_text(result['prompt'])
-            prompt_label.classes(remove='hidden')
-            answer_input.classes(remove='hidden')
-            submit_btn.classes(remove='hidden')
-
-        def _on_submit_reading():
-            if not answer_input.value.strip():
-                ui.notify('Please write something before submitting.', type='warning')
-                return
-            answer_input.disable()
-            submit_btn.disable()
-            spinner_row.classes(remove='hidden')
-            asyncio.create_task(_evaluate_reading(answer_input.value))
+                    'Submit', on_click=_on_submit_reading
+                ).props('color=primary')
 
         async def _evaluate_reading(student_response: str):
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
+            feedback_text = await loop.run_in_executor(
                 None,
-                lambda: coach_comprehension_pause(
-                    section['text'], student_response, strategy, level,
-                    state['session_id'], user_id,
+                lambda: get_feedback(
+                    'comprehension',
+                    section_text=section['text'],
+                    question=prompt_text,
+                    rubric=rubric,
+                    student_response=student_response,
                 ),
             )
             spinner_row.classes(add='hidden')
             feedback_col.classes(remove='hidden')
             with feedback_col:
-                is_strong = result.get('is_strong', True)
-                icon_name = 'check_circle' if is_strong else 'info'
-                icon_color = 'text-green-600' if is_strong else 'text-blue-500'
                 with ui.row().classes('items-start gap-2'):
-                    ui.icon(icon_name).classes(f'{icon_color} text-xl')
-                    ui.label(result['feedback']).classes('text-sm text-gray-700')
+                    ui.icon('info').classes('text-blue-500 text-xl')
+                    ui.label(feedback_text).classes('text-sm text-gray-700')
                 ui.button(
                     'Continue Reading →',
-                    on_click=lambda: _advance_reading(
-                        prompt_holder['text'] or '',
-                        is_strong,
-                        result['feedback'],
-                        student_response,
-                    ),
+                    on_click=lambda: _advance_reading(prompt_text, feedback_text, student_response),
                 ).props('color=primary')
-            _save_response(
-                'reading_pause',
-                prompt_holder['text'] or '',
-                student_response,
-                result['feedback'],
-                is_strong,
-            )
+            _save_response('reading_pause', prompt_text, student_response, feedback_text, None)
 
-        asyncio.create_task(_load_prompt())
-
-    def _advance_reading(pause_prompt, is_correct, feedback_text, answer):
+    def _advance_reading(pause_prompt, feedback_text, answer):
         state['reading_section'] += 1
         _persist_step()
         render_reading_step()
@@ -442,39 +516,18 @@ async def session_page():
                 ui.label(
                     "Now let's see how well you understood the big picture."
                 ).classes('text-gray-600 text-center')
-
-                gen_spinner = ui.row().classes('items-center gap-2')
-                with gen_spinner:
-                    ui.spinner(size='sm')
-                    ui.label('Preparing mastery questions…').classes('text-sm text-gray-500')
-
-                continue_btn = ui.button(
+                ui.button(
                     'Continue →',
                     on_click=lambda: _go_to_step(2),
                     icon='arrow_forward',
-                ).props('color=primary').classes('hidden')
-
-        async def _pre_generate_questions():
-            loop = asyncio.get_event_loop()
-            full_text = "\n\n".join(
-                s['text'] for s in (state['passage_sections'] or _FALLBACK_SECTIONS)
-            )
-            questions = await loop.run_in_executor(
-                None,
-                lambda: generate_mastery_questions(
-                    full_text, state.get('reading_level', 'Grade 6'),
-                    state['session_id'], user_id,
-                ),
-            )
-            state['mastery_questions'] = questions or list(MASTERY_QUESTIONS)
-            gen_spinner.set_visibility(False)
-            continue_btn.classes(remove='hidden')
-
-        asyncio.create_task(_pre_generate_questions())
+                ).props('color=primary')
 
     def render_gist_step():
         update_progress(2, 0.0)
         content_area.clear()
+        bundle = state['bundle'] or {}
+        reflection_question = bundle.get('reflection_question', '')
+        full_passage = bundle.get('passage_text', '')
 
         with content_area:
             with ui.card().classes('w-full p-5 gap-3'):
@@ -493,76 +546,59 @@ async def session_page():
                 feedback_col = ui.column().classes('w-full gap-2 hidden')
                 reflection_col = ui.column().classes('w-full gap-3 hidden')
 
-                # Will be assigned inside `with reflection_col:` below;
-                # _evaluate_gist reads it via closure at call time (after assignment).
-                reflection_label = None
-
                 gist_btn = ui.button('Submit Summary', on_click=lambda: submit_gist()).props('color=primary')
 
-                def submit_gist(inp=gist_input, sp=spinner_row, fb=feedback_col, rc=reflection_col, btn=gist_btn):
-                    if not inp.value.strip():
+                def submit_gist():
+                    if not gist_input.value.strip():
                         ui.notify('Please write a summary before submitting.', type='warning')
                         return
-                    inp.disable()
-                    btn.disable()
-                    sp.classes(remove='hidden')
-                    asyncio.create_task(_evaluate_gist(inp.value))
+                    gist_input.disable()
+                    gist_btn.disable()
+                    spinner_row.classes(remove='hidden')
+                    asyncio.create_task(_evaluate_gist(gist_input.value))
 
                 async def _evaluate_gist(gist_text: str):
                     loop = asyncio.get_event_loop()
-                    full_text = "\n\n".join(
-                        s['text'] for s in (state['passage_sections'] or _FALLBACK_SECTIONS)
-                    )
-                    result = await loop.run_in_executor(
+                    feedback_text = await loop.run_in_executor(
                         None,
-                        lambda: assess_gist_and_mastery(
-                            full_text, gist_text, [],
-                            state['session_id'], user_id,
+                        lambda: get_feedback(
+                            'gist',
+                            full_passage=full_passage,
+                            student_gist=gist_text,
                         ),
                     )
                     state['_last_gist'] = gist_text
-                    gist_feedback = result.get('gist_feedback') or GIST_FEEDBACK
-                    reflection = result.get('reflection_prompt') or REFLECTION_PROMPT
-
                     update_progress(2, 0.5)
                     spinner_row.classes(add='hidden')
                     feedback_col.classes(remove='hidden')
                     with feedback_col:
                         with ui.row().classes('items-start gap-2'):
-                            ui.icon('check_circle').classes('text-green-600 text-xl')
-                            ui.label(gist_feedback['praise']).classes('text-sm text-gray-700')
-                        ui.label(f"Also worth noting: {gist_feedback['also_note']}").classes(
-                            'text-sm text-gray-500 italic'
-                        )
+                            ui.icon('info').classes('text-blue-500 text-xl')
+                            ui.label(feedback_text).classes('text-sm text-gray-700')
 
-                    if reflection_label is not None:
-                        reflection_label.set_text(reflection)
                     reflection_col.classes(remove='hidden')
-
-                    _save_response('gist', 'Gist summary', gist_text, gist_feedback['praise'], None)
+                    _save_response('gist', 'Gist summary', gist_text, feedback_text, None)
 
                 with reflection_col:
                     ui.separator()
                     ui.label('Reflection').classes('text-xs text-gray-400 uppercase tracking-wide')
-                    reflection_label = ui.label('').classes('text-base font-medium')
+                    ui.label(reflection_question).classes('text-base font-medium')
 
                     reflection_input = ui.textarea(placeholder='I would ask…').classes('w-full')
 
-                    def advance_from_reflection(rinp=reflection_input):
-                        if rinp.value.strip():
-                            _save_response('gist', reflection_label.text, rinp.value, '', None)
+                    def advance_from_reflection():
+                        if reflection_input.value.strip():
+                            _save_response('gist', reflection_question, reflection_input.value, '', None)
                         _go_to_step(3)
 
                     ui.button('Continue →', on_click=advance_from_reflection, icon='arrow_forward').props('color=primary')
 
-    def _get_mastery_questions():
-        return state['mastery_questions'] or list(MASTERY_QUESTIONS)
-
     def render_mastery_step():
         content_area.clear()
-        questions = _get_mastery_questions()
+        bundle = state['bundle'] or {}
+        questions = bundle.get('mastery_questions') or []
         q_idx = state['mastery_idx']
-        update_progress(3, q_idx / len(questions))
+        update_progress(3, q_idx / max(len(questions), 1))
 
         if q_idx >= len(questions):
             _show_final_summary()
@@ -600,40 +636,22 @@ async def session_page():
                             return
                         btn.disable()
                         is_correct = q['choices'].index(sel['value']) == q['correct_index']
-                        sp.classes(remove='hidden')
-                        asyncio.create_task(_eval_mc(q, sel['value'], is_correct, sp, fb))
-
-                    async def _eval_mc(q, answer, is_correct, sp, fb):
-                        loop = asyncio.get_event_loop()
-                        full_text = "\n\n".join(
-                            s['text'] for s in (state['passage_sections'] or _FALLBACK_SECTIONS)
+                        explanation = q.get('explanation') or (
+                            'Correct — that matches the passage.' if is_correct
+                            else 'Not quite — review the passage for more context.'
                         )
-                        result = await loop.run_in_executor(
-                            None,
-                            lambda: assess_gist_and_mastery(
-                                full_text,
-                                state['_last_gist'],
-                                [{'question': q['text'], 'answer': answer, 'type': 'multiple_choice', 'is_correct': is_correct}],
-                                state['session_id'],
-                                user_id,
-                            ),
-                        )
-                        scores = result.get('mastery_scores') or []
-                        feedback_text = scores[0]['feedback'] if scores else (
-                            'Correct!' if is_correct else 'Not quite — re-read the passage for more context.'
-                        )
+                        qs = questions
                         sp.classes(add='hidden')
                         fb.classes(remove='hidden')
-                        qs = _get_mastery_questions()
                         with fb:
                             icon_name = 'check_circle' if is_correct else 'cancel'
                             icon_color = 'text-green-600' if is_correct else 'text-red-500'
                             with ui.row().classes('items-start gap-2'):
                                 ui.icon(icon_name).classes(f'{icon_color} text-xl')
-                                ui.label(feedback_text).classes('text-sm text-gray-700')
+                                ui.label(explanation).classes('text-sm text-gray-700')
                             label = 'Next Question →' if state['mastery_idx'] < len(qs) - 1 else 'See Results →'
-                            ui.button(label, on_click=lambda: _advance_mastery(q, is_correct, feedback_text, answer)).props('color=primary')
-                        _save_response('mastery', q['text'], answer, feedback_text, is_correct)
+                            ui.button(label, on_click=lambda: _advance_mastery(q, is_correct, explanation, sel['value'])).props('color=primary')
+                        _save_response('mastery', q['text'], sel['value'], explanation, is_correct)
 
                 else:  # short_answer
                     text_input = ui.textarea(placeholder='Write your answer here…').classes('w-full')
@@ -651,38 +669,26 @@ async def session_page():
 
                     async def _eval_sa(q, answer, sp, fb):
                         loop = asyncio.get_event_loop()
-                        full_text = "\n\n".join(
-                            s['text'] for s in (state['passage_sections'] or _FALLBACK_SECTIONS)
-                        )
-                        result = await loop.run_in_executor(
+                        feedback_text = await loop.run_in_executor(
                             None,
-                            lambda: assess_gist_and_mastery(
-                                full_text,
-                                state['_last_gist'],
-                                [{'question': q['text'], 'answer': answer, 'type': 'short_answer'}],
-                                state['session_id'],
-                                user_id,
+                            lambda: get_feedback(
+                                'mastery_sa',
+                                question=q['text'],
+                                source_span=q.get('source_span', ''),
+                                key_points=q.get('key_points', []),
+                                student_answer=answer,
                             ),
                         )
-                        scores = result.get('mastery_scores') or []
-                        if scores:
-                            is_correct = scores[0].get('correct', True)
-                            feedback_text = scores[0].get('feedback', 'Good effort!')
-                        else:
-                            is_correct = True
-                            feedback_text = 'Good effort!'
                         sp.classes(add='hidden')
                         fb.classes(remove='hidden')
-                        qs = _get_mastery_questions()
+                        qs = questions
                         with fb:
-                            icon_name = 'check_circle' if is_correct else 'info'
-                            icon_color = 'text-green-600' if is_correct else 'text-blue-500'
                             with ui.row().classes('items-start gap-2'):
-                                ui.icon(icon_name).classes(f'{icon_color} text-xl')
+                                ui.icon('info').classes('text-blue-500 text-xl')
                                 ui.label(feedback_text).classes('text-sm text-gray-700')
                             label = 'Next Question →' if state['mastery_idx'] < len(qs) - 1 else 'See Results →'
-                            ui.button(label, on_click=lambda: _advance_mastery(q, is_correct, feedback_text, answer)).props('color=primary')
-                        _save_response('mastery', q['text'], answer, feedback_text, is_correct)
+                            ui.button(label, on_click=lambda: _advance_mastery(q, None, feedback_text, answer)).props('color=primary')
+                        _save_response('mastery', q['text'], answer, feedback_text, None)
 
     def _advance_mastery(question, is_correct, feedback_text, answer):
         state['mastery_idx'] += 1
@@ -694,23 +700,24 @@ async def session_page():
         content_area.clear()
 
         mastery_responses = [r for r in state['responses'] if r['step'] == 'mastery']
-        mc_correct = sum(1 for r in mastery_responses if r.get('is_correct'))
+        correct_count = sum(1 for r in mastery_responses if r.get('is_correct') is True)
+        total_mc = sum(1 for r in mastery_responses if r.get('is_correct') is not None)
 
         try:
             complete_session(state['session_id'], {'responses': state['responses']})
         except Exception:
             pass
-        app.storage.user.pop('session_id', None)
 
         with content_area:
             with ui.column().classes('items-center w-full gap-6 py-8'):
                 ui.icon('emoji_events', size='4rem').classes('text-yellow-500')
                 ui.label('Session Complete!').classes('text-3xl font-bold text-center')
-                ui.label('Solid work on a challenging text!').classes('text-gray-600 text-center text-lg')
+                ui.label('You finished the full reading session.').classes('text-gray-600 text-center text-lg')
 
-                with ui.card().classes('w-full p-4 text-center gap-1'):
-                    ui.label('Comprehension Score').classes('text-xs text-gray-400 uppercase tracking-wide')
-                    ui.label(f'{mc_correct + 5}/10').classes('text-3xl font-bold text-primary')
+                if total_mc > 0:
+                    with ui.card().classes('w-full p-4 text-center gap-1'):
+                        ui.label('Mastery Score').classes('text-xs text-gray-400 uppercase tracking-wide')
+                        ui.label(f'{correct_count}/{total_mc}').classes('text-3xl font-bold text-primary')
 
                 ui.label('Next session: Something new awaits!').classes(
                     'text-sm text-gray-400 italic text-center'
@@ -734,71 +741,75 @@ async def session_page():
         elif step == 3:
             render_mastery_step()
 
-    # ── Content loading ───────────────────────────────────────────────────────
-
-    async def _load_content(session_id: str):
-        """Run text_selection agent in executor, then update state and start vocab step."""
-        loop = asyncio.get_event_loop()
-        content = await loop.run_in_executor(
-            None,
-            lambda: select_stretch_text_tool(user_id, session_id, access_token=access_token),
-        )
-        state['passage_title'] = content['title']
-        state['passage_sections'] = content['sections']
-        state['vocab_words'] = content['vocab']
-        state['vocab_main_queue'] = list(content['vocab'])
-        state['vocab_total_words'] = len(content['vocab'])
-        state['reading_level'] = content.get('target_level', 'Grade 6')
-        render_vocab_step()
-
-    # ── Page load: resume or start fresh ─────────────────────────────────────
-
-    async def _start_fresh():
-        try:
-            sid = create_session(user_id)
-        except Exception:
-            ui.notify('Could not start session. Please try again.', type='negative')
-            return
-        state['session_id'] = sid
-        app.storage.user['session_id'] = sid
-        _show_loading_spinner()
-        asyncio.create_task(_load_content(sid))
-
-    async def _resume_session(existing: dict):
-        state['session_id'] = existing['id']
-        resumed_step = existing.get('current_step', 0)
-        state['step'] = resumed_step
-        app.storage.user['session_id'] = existing['id']
-
-        if resumed_step == 0:
-            # Re-generate content for resumed vocab step
-            _show_loading_spinner('Loading your session…')
-            asyncio.create_task(_load_content(existing['id']))
-        else:
-            # For later steps, content was already consumed — go directly
-            _go_to_step(resumed_step)
+    # ── Resume helpers ────────────────────────────────────────────────────────
 
     def _show_resume_prompt(existing: dict):
         content_area.clear()
         update_progress(existing.get('current_step', 0))
+        bundle_id = existing.get('bundle_id')
+        passage_title = ''
+        if bundle_id:
+            try:
+                b = get_session_bundle(bundle_id)
+                passage_title = (b or {}).get('passage_title', '') or ''
+            except Exception:
+                pass
+
+        title_text = f'"{passage_title}"' if passage_title else 'your previous session'
+
         with content_area:
             with ui.column().classes('items-center w-full gap-6 py-8'):
                 ui.icon('restore', size='3rem').classes('text-primary')
                 ui.label('Continue where you left off?').classes('text-2xl font-bold text-center')
                 ui.label(
-                    f"You have an unfinished session at {STEP_LABELS[existing.get('current_step', 0)]}."
+                    f"You have an unfinished session at {STEP_LABELS[existing.get('current_step', 0)]}: {title_text}."
                 ).classes('text-gray-600 text-center')
                 with ui.row().classes('gap-4'):
                     ui.button('Continue', on_click=lambda: asyncio.create_task(_resume_session(existing)), icon='play_arrow').props('color=primary')
-                    ui.button('Start Fresh', on_click=lambda: asyncio.create_task(_start_fresh())).props('flat')
+                    ui.button('Start Over', on_click=render_topic_picker).props('flat')
 
-    # Check for existing in-progress session
+    async def _resume_session(existing: dict):
+        bundle_id = existing.get('bundle_id')
+        if not bundle_id:
+            render_topic_picker()
+            return
+
+        bundle = get_session_bundle(bundle_id)
+        if not bundle or bundle.get('status') != 'ready':
+            render_topic_picker()
+            return
+
+        state['session_id'] = existing['id']
+        state['step'] = existing.get('current_step', 0)
+        _load_bundle_into_state(bundle)
+        _go_to_step(state['step'])
+
+    # ── Page load entry point ─────────────────────────────────────────────────
+
     try:
         existing = get_active_session(user_id)
     except Exception:
         existing = None
 
-    if existing:
+    if existing and existing.get('bundle_id'):
+        # Check for stuck generating bundle
+        bundle_id = existing['bundle_id']
+        try:
+            active_bundle = get_active_bundle(user_id)
+            if (active_bundle
+                    and active_bundle.get('status') == 'generating'
+                    and active_bundle.get('id') == bundle_id):
+                created_at_str = active_bundle.get('created_at', '')
+                if created_at_str:
+                    import datetime as _dt
+                    created_at = _dt.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                    age_minutes = (_dt.datetime.now(_dt.timezone.utc) - created_at).total_seconds() / 60
+                    if age_minutes > _STUCK_BUNDLE_MINUTES:
+                        existing = None
+        except Exception:
+            pass
+
+    if existing and existing.get('bundle_id'):
         _show_resume_prompt(existing)
     else:
-        await _start_fresh()
+        render_topic_picker()
