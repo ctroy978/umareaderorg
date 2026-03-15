@@ -8,4 +8,8 @@ dependencies = [
     "nicegui>=2.0",
     "supabase>=2.0",
     "python-dotenv>=1.0",
+    "langgraph>=1.1.2",
+    "langchain-core>=1.2.19",
+    "langchain-groq>=1.1.2",
+    "fastmcp>=3.1.1",
 ]

@@ -1,4 +1,4 @@
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 from utils.config import SUPABASE_URL, SUPABASE_ANON_KEY
 
 _client: Client | None = None
@@ -11,19 +11,32 @@ def get_client() -> Client:
     return _client
 
 
+def _authed_client(access_token: str) -> Client:
+    """Return a client authenticated as the user (satisfies RLS auth.uid() checks).
+
+    In supabase-py v2, the Authorization header must be set via ClientOptions so it
+    overrides the default anon-key bearer at client construction time.
+    """
+    return create_client(
+        SUPABASE_URL,
+        SUPABASE_ANON_KEY,
+        options=ClientOptions(headers={"Authorization": f"Bearer {access_token}"}),
+    )
+
+
 def exchange_code_for_session(code: str):
     client = get_client()
     return client.auth.exchange_code_for_session({"auth_code": code})
 
 
-def get_profile(user_id: str):
-    client = get_client()
+def get_profile(user_id: str, access_token: str | None = None):
+    client = _authed_client(access_token) if access_token else get_client()
     response = client.table("profiles").select("*").eq("user_id", user_id).maybe_single().execute()
     return response.data
 
 
-def upsert_profile(user_id: str, data: dict):
-    client = get_client()
+def upsert_profile(user_id: str, data: dict, access_token: str | None = None):
+    client = _authed_client(access_token) if access_token else get_client()
     payload = {"user_id": user_id, **data}
     client.table("profiles").upsert(payload, on_conflict="user_id").execute()
 
@@ -126,6 +139,36 @@ def save_session_response(
             "is_correct": is_correct,
         }
     ).execute()
+
+
+def log_agent_run(
+    student_id: str,
+    tool_name: str,
+    input_json: dict,
+    *,
+    output_json: dict | None = None,
+    error_text: str | None = None,
+    duration_ms: int | None = None,
+    session_id: str | None = None,
+    iteration_count: int | None = None,
+) -> None:
+    """Log an agent run to the agent_runs table. Never raises."""
+    try:
+        client = get_client()
+        client.table("agent_runs").insert(
+            {
+                "student_id": student_id,
+                "tool_name": tool_name,
+                "input_json": input_json,
+                "output_json": output_json,
+                "error_text": error_text,
+                "duration_ms": duration_ms,
+                "session_id": session_id,
+                "iteration_count": iteration_count,
+            }
+        ).execute()
+    except Exception:
+        pass
 
 
 def get_last_completed_session(student_id: str) -> dict | None:

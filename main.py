@@ -30,8 +30,9 @@ async def auth_callback(request: Request):
             'email': result.user.email,
         })
         user_id = result.user.id
+        access_token = result.session.access_token
         try:
-            profile = get_profile(user_id)
+            profile = get_profile(user_id, access_token=access_token)
             if profile and profile.get('onboarded'):
                 return RedirectResponse('/dashboard')
         except Exception:

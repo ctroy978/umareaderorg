@@ -1,3 +1,4 @@
+import asyncio
 import html as html_lib
 import random
 
@@ -6,11 +7,11 @@ from nicegui import app, ui
 from app.data.session_content import (
     GIST_FEEDBACK,
     MASTERY_QUESTIONS,
-    PASSAGE_SECTIONS,
-    PASSAGE_TITLE,
+    PASSAGE_SECTIONS as _FALLBACK_SECTIONS,
+    PASSAGE_TITLE as _FALLBACK_TITLE,
     READING_PAUSE_PROMPTS,
     REFLECTION_PROMPT,
-    VOCAB_WORDS,
+    VOCAB_WORDS as _FALLBACK_VOCAB_WORDS,
 )
 from app.supabase_client import (
     complete_session,
@@ -19,6 +20,7 @@ from app.supabase_client import (
     save_session_response,
     update_session_step,
 )
+from agents.tools.text_selection_tool import select_stretch_text_tool
 
 TOTAL_STEPS = 4
 STEP_LABELS = ["Vocab Preview", "Supported Reading", "Gist & Reflection", "Mastery Check"]
@@ -30,18 +32,22 @@ async def session_page():
         return ui.navigate.to('/login')
 
     user_id = app.storage.user.get('user_id')
+    access_token = app.storage.user.get('access_token')
 
     state = {
         'session_id': None,
         'step': 0,          # 0=vocab, 1=reading, 2=gist, 3=mastery
-        'vocab_main_queue': list(VOCAB_WORDS),   # words to present first time
-        'vocab_retry_queue': [],                  # words missed on first attempt
-        'vocab_word_results': {},                 # word -> status string
-        'vocab_total_words': len(VOCAB_WORDS),
+        'passage_title': None,
+        'passage_sections': None,
+        'vocab_words': None,   # Phase 4 format: [{word, sentence, parallel_sentence}]
+        'vocab_main_queue': [],
+        'vocab_retry_queue': [],
+        'vocab_word_results': {},
+        'vocab_total_words': 0,
         'vocab_results': [],   # {word, correct} — kept for legacy compat
         'reading_section': 0,
         'mastery_idx': 0,
-        'responses': [],       # all collected response dicts for final save
+        'responses': [],
         'gist_done': False,
     }
 
@@ -101,6 +107,13 @@ async def session_page():
         except Exception:
             pass
 
+    def _show_loading_spinner(message: str = 'Personalizing your reading session…'):
+        content_area.clear()
+        with content_area:
+            with ui.column().classes('items-center w-full gap-4 py-16'):
+                ui.spinner(size='xl')
+                ui.label(message).classes('text-gray-500 text-lg text-center')
+
     # ── Step renderers ────────────────────────────────────────────────────────
 
     def render_vocab_step():
@@ -123,7 +136,7 @@ async def session_page():
 
     def _render_vocab_word(word_data, is_retry, word_num):
         content_area.clear()
-        _vocab_within = len(state['vocab_word_results']) / state['vocab_total_words']
+        _vocab_within = len(state['vocab_word_results']) / max(state['vocab_total_words'], 1)
         update_progress(0, _vocab_within)
         word = word_data['word']
         sentence = word_data['sentence']
@@ -197,8 +210,7 @@ async def session_page():
                 # Feedback panel — hidden until answer submitted
                 feedback_div = ui.column().classes('gap-3 hidden')
 
-                # Auto-advance to question after 5 seconds (must be created inside
-                # a valid element context, so it lives here rather than after the block)
+                # Auto-advance to question after 5 seconds
                 ui.timer(5.0, lambda: _go_to_question(), once=True)
 
         def _go_to_question():
@@ -263,6 +275,7 @@ async def session_page():
             1 for s in results.values() if s in ('mastered_first', 'mastered_retry')
         )
         flagged = [w for w, s in results.items() if s == 'flagged']
+        vocab_words = state['vocab_words'] or []
         content_area.clear()
         with content_area:
             with ui.column().classes('items-center w-full gap-6 py-8'):
@@ -271,7 +284,7 @@ async def session_page():
                     'text-gray-600 text-center text-lg'
                 )
                 with ui.card().classes('w-full p-4 gap-2'):
-                    for wd in VOCAB_WORDS:
+                    for wd in vocab_words:
                         w = wd['word']
                         status = results.get(w, 'mastered_first')
                         if status == 'mastered_first':
@@ -302,18 +315,21 @@ async def session_page():
     def render_reading_step():
         content_area.clear()
         sec_idx = state['reading_section']
-        update_progress(1, sec_idx / len(PASSAGE_SECTIONS))
+        sections = state['passage_sections'] or _FALLBACK_SECTIONS
+        title = state['passage_title'] or _FALLBACK_TITLE
+        update_progress(1, sec_idx / len(sections))
 
-        if sec_idx >= len(PASSAGE_SECTIONS):
+        if sec_idx >= len(sections):
             _show_reading_transition()
             return
 
-        section = PASSAGE_SECTIONS[sec_idx]
-        pause = READING_PAUSE_PROMPTS[sec_idx]
+        section = sections[sec_idx]
+        # Use the same pause prompts (still dummy in Phase 4)
+        pause = READING_PAUSE_PROMPTS[min(sec_idx, len(READING_PAUSE_PROMPTS) - 1)]
 
         with content_area:
             with ui.card().classes('w-full p-5 gap-3'):
-                ui.label(f'{PASSAGE_TITLE} — Section {section["section"]} of {len(PASSAGE_SECTIONS)}').classes(
+                ui.label(f'{title} — Section {section["section"]} of {len(sections)}').classes(
                     'text-xs text-gray-400 uppercase tracking-wide'
                 )
                 ui.label(section['text']).classes('text-base leading-relaxed')
@@ -543,16 +559,13 @@ async def session_page():
         update_progress(4, 1.0)
         content_area.clear()
 
-        # Tally mastery score from responses
         mastery_responses = [r for r in state['responses'] if r['step'] == 'mastery']
         mc_correct = sum(1 for r in mastery_responses if r.get('is_correct'))
 
-        # Persist completion to Supabase
         try:
             complete_session(state['session_id'], {'responses': state['responses']})
         except Exception:
             pass
-        # Clear stored session_id so next visit starts fresh
         app.storage.user.pop('session_id', None)
 
         with content_area:
@@ -587,9 +600,25 @@ async def session_page():
         elif step == 3:
             render_mastery_step()
 
+    # ── Content loading ───────────────────────────────────────────────────────
+
+    async def _load_content(session_id: str):
+        """Run text_selection agent in executor, then update state and start vocab step."""
+        loop = asyncio.get_event_loop()
+        content = await loop.run_in_executor(
+            None,
+            lambda: select_stretch_text_tool(user_id, session_id, access_token=access_token),
+        )
+        state['passage_title'] = content['title']
+        state['passage_sections'] = content['sections']
+        state['vocab_words'] = content['vocab']
+        state['vocab_main_queue'] = list(content['vocab'])
+        state['vocab_total_words'] = len(content['vocab'])
+        render_vocab_step()
+
     # ── Page load: resume or start fresh ─────────────────────────────────────
 
-    def _start_fresh():
+    async def _start_fresh():
         try:
             sid = create_session(user_id)
         except Exception:
@@ -597,14 +626,22 @@ async def session_page():
             return
         state['session_id'] = sid
         app.storage.user['session_id'] = sid
-        render_vocab_step()
+        _show_loading_spinner()
+        asyncio.create_task(_load_content(sid))
 
-    def _resume_session(existing: dict):
+    async def _resume_session(existing: dict):
         state['session_id'] = existing['id']
         resumed_step = existing.get('current_step', 0)
         state['step'] = resumed_step
         app.storage.user['session_id'] = existing['id']
-        _go_to_step(resumed_step)
+
+        if resumed_step == 0:
+            # Re-generate content for resumed vocab step
+            _show_loading_spinner('Loading your session…')
+            asyncio.create_task(_load_content(existing['id']))
+        else:
+            # For later steps, content was already consumed — go directly
+            _go_to_step(resumed_step)
 
     def _show_resume_prompt(existing: dict):
         content_area.clear()
@@ -617,8 +654,8 @@ async def session_page():
                     f"You have an unfinished session at {STEP_LABELS[existing.get('current_step', 0)]}."
                 ).classes('text-gray-600 text-center')
                 with ui.row().classes('gap-4'):
-                    ui.button('Continue', on_click=lambda: _resume_session(existing), icon='play_arrow').props('color=primary')
-                    ui.button('Start Fresh', on_click=_start_fresh).props('flat')
+                    ui.button('Continue', on_click=lambda: asyncio.create_task(_resume_session(existing)), icon='play_arrow').props('color=primary')
+                    ui.button('Start Fresh', on_click=lambda: asyncio.create_task(_start_fresh())).props('flat')
 
     # Check for existing in-progress session
     try:
@@ -629,4 +666,4 @@ async def session_page():
     if existing:
         _show_resume_prompt(existing)
     else:
-        _start_fresh()
+        await _start_fresh()

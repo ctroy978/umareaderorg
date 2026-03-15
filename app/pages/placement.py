@@ -5,6 +5,7 @@ from app.supabase_client import (
     save_placement_progress,
     save_placement_response,
     delete_placement_progress,
+    upsert_profile,
 )
 
 TOTAL_QUESTIONS = sum(len(p["questions"]) for p in PLACEMENT_PASSAGES)
@@ -16,6 +17,7 @@ async def placement_page():
         return ui.navigate.to('/login')
 
     user_id = app.storage.user.get('user_id')
+    access_token = app.storage.user.get('access_token')
 
     # Load or create progress
     passage_idx = 0
@@ -186,6 +188,13 @@ async def placement_page():
         level, lexile = compute_reading_level(state['answers'])
         app.storage.user['placement_level'] = level
         app.storage.user['placement_lexile'] = lexile
+        try:
+            upsert_profile(user_id, {
+                'onboarded': True,
+                'reading_level': level,
+            }, access_token=access_token)
+        except Exception:
+            pass
         try:
             delete_placement_progress(user_id)
         except Exception:

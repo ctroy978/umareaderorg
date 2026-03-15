@@ -16,6 +16,7 @@ async def placement_result_page():
         return ui.navigate.to('/placement')
 
     user_id = app.storage.user.get('user_id')
+    access_token = app.storage.user.get('access_token')
     now_iso = datetime.now(timezone.utc).isoformat()
 
     try:
@@ -23,7 +24,7 @@ async def placement_result_page():
             'onboarded': True,
             'reading_level': level,
             'placement_completed_at': now_iso,
-        })
+        }, access_token=access_token)
     except Exception:
         pass
 

@@ -10,10 +10,11 @@ async def welcome_page():
         return ui.navigate.to('/login')
 
     user_id = app.storage.user.get('user_id')
+    access_token = app.storage.user.get('access_token')
 
     # If already onboarded, skip to dashboard
     try:
-        profile = get_profile(user_id)
+        profile = get_profile(user_id, access_token=access_token)
         if profile and profile.get('onboarded'):
             return ui.navigate.to('/dashboard')
     except Exception:
@@ -55,7 +56,7 @@ async def welcome_page():
             interests = get_selected()
             selected_interests.update(interests)
             try:
-                upsert_profile(user_id, {'interests': interests})
+                upsert_profile(user_id, {'interests': interests}, access_token=access_token)
             except Exception:
                 pass
             ui.navigate.to('/placement')
@@ -67,7 +68,7 @@ async def welcome_page():
                     'onboarded': True,
                     'reading_level': 'Level 1',
                     'interests': interests,
-                })
+                }, access_token=access_token)
             except Exception:
                 pass
             ui.navigate.to('/dashboard')
