@@ -60,9 +60,15 @@ def planner_node(state: ComprehensionCoachState) -> dict:
             f"Valid: {sorted(_VALID_ACTIONS)}"
         )
 
+    iteration = state.get("iteration", 0)
+    print(
+        f"[comp_coach][iter {iteration}] → {next_action} | {parsed.get('plan_summary', '')[:80]}",
+        flush=True,
+    )
+
     return {
         "next_action": next_action,
         "current_step": parsed.get("current_step", next_action),
         "plan_summary": parsed.get("plan_summary", ""),
-        "iteration": state.get("iteration", 0) + 1,
+        "iteration": iteration + 1,
     }

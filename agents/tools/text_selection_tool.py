@@ -7,7 +7,7 @@ The FastMCP decorator is present for future remote deployment via mcp_server.py.
 import json
 import time
 
-from app.supabase_client import get_profile, log_agent_run
+from app.supabase_client import get_profile, log_agent_run, get_topic_from_bank
 from app.data.session_content import (
     PASSAGE_TITLE as _FALLBACK_TITLE,
     PASSAGE_SECTIONS as _FALLBACK_SECTIONS,
@@ -44,12 +44,24 @@ def select_stretch_text_tool(student_id: str, session_id: str | None = None, acc
 
     try:
         profile = get_profile(student_id, access_token=access_token)
-        reading_level = (profile or {}).get("reading_level", "Grade 6")
+        reading_level = (profile or {}).get("reading_level", "800L")
         interests = (profile or {}).get("interests", [])
         if isinstance(interests, str):
             interests = [interests]
         if not interests:
             interests = ["science", "nature"]
+
+        bank_topic_id = None
+        if topic_override:
+            bank_row = get_topic_from_bank(topic_override, student_id)
+            if bank_row:
+                bank_topic_id = bank_row["id"]
+                facts_str = "\n".join(f"- {f}" for f in (bank_row.get("key_facts") or []))
+                topic_override = (
+                    f"{bank_row['topic']}\n\n"
+                    f"Open section 1 with this hook (or very close to it): {bank_row['hook']}\n\n"
+                    f"Key facts to weave into the passage (use specific numbers and names):\n{facts_str}"
+                )
 
         initial_state = {
             "student_id": student_id,
@@ -86,6 +98,7 @@ def select_stretch_text_tool(student_id: str, session_id: str | None = None, acc
             "vocab": vocab,
             "target_level": reading_level,
             "rationale": result.get("plan_summary", ""),
+            "topic_bank_id": bank_topic_id,
         }
 
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -126,6 +139,6 @@ def select_stretch_text_tool(student_id: str, session_id: str | None = None, acc
             "title": _FALLBACK_TITLE,
             "sections": _FALLBACK_SECTIONS,
             "vocab": _dummy_vocab_format(_FALLBACK_VOCAB_WORDS),
-            "target_level": "Grade 6",
+            "target_level": "800L",
             "rationale": f"Fallback due to error: {exc}",
         }

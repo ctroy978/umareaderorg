@@ -7,15 +7,16 @@ Score ≥ 8 means approved. Score < 8 means the worker must revise.
 Scoring dimensions by artifact type:
 
 topic:
-  - relevance_to_interests: Does the topic genuinely connect to the student's interests?
+  - relevance_to_interests: Does the topic genuinely connect to the student's stated interests?
   - grade_appropriateness: Is the topic at the right complexity for the reading level?
-  - topic_specificity: Is the topic specific and concrete (not vague)?
+  - topic_specificity: Is the topic laser-focused on ONE specific event, creature, mechanism, or discovery — not a broad category? Score ≤ 4 if the topic is vague or general (e.g., "animal adaptations," "ancient civilizations," "how ecosystems work," "space exploration"). Score ≥ 8 only if a reader could immediately picture the specific thing being described and anticipate learning surprising concrete facts from it.
 
 generated_text:
   - reading_level_match: Does vocabulary and sentence complexity match the stated level?
-  - passage_quality: Is the writing clear, accurate, and engaging?
-  - section_structure: Do sections follow the required intro/develop/develop/synthesize pattern?
+  - passage_quality: Is the writing vivid and narrative, not textbook-generic? Does section 1 open with a surprising or dramatic hook rather than a definition?
+  - section_structure: Do sections follow the required hook/develop/develop/synthesize pattern?
   - vocabulary_richness: Are 5 challenging words naturally woven into the text?
+  - fact_density: Does the passage contain at least 4 specific, concrete facts (exact names, dates, measurements, or named research)? Score ≤ 4 if the passage makes only vague generalizations.
 
 vocab:
   - word_difficulty: Are words genuinely challenging but learnable?

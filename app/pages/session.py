@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import html as html_lib
+import random
 
 from nicegui import app, ui
 
@@ -64,7 +65,7 @@ async def session_page():
         'mastery_idx': 0,
         'responses': [],
         'gist_done': False,
-        'reading_level': 'Grade 6',
+        'reading_level': '800L',
         '_last_gist': '',
     }
 
@@ -140,35 +141,35 @@ async def session_page():
         content_area.clear()
         update_progress(0, 0.0)
         selected_topic = {'value': None}
+        all_buttons = []
 
         with content_area:
             ui.label("What would you like to read about today?").classes('text-xl font-bold text-center')
-            ui.label("Choose a category or type your own topic.").classes('text-gray-500 text-center text-sm')
+            ui.label("Choose a category below.").classes('text-gray-500 text-center text-sm')
 
             with ui.grid(columns=2).classes('w-full gap-3 mt-2'):
                 for cat in _TOPIC_CATEGORIES:
                     btn = ui.button(cat['label']).props('outline').classes('w-full')
+                    all_buttons.append(btn)
 
                     def _make_click(val, b):
                         def _click():
                             selected_topic['value'] = val
-                            # Visual: reset all, highlight selected
-                            for child in content_area:
-                                pass  # NiceGUI grid manages styling
+                            # Reset all buttons to outline, highlight the selected one
+                            for other in all_buttons:
+                                other.props('outline color=')
+                            b.props(remove='outline')
                             b.props('color=primary')
                         return _click
 
                     btn.on_click(_make_click(cat['value'], btn))
 
-            ui.label("Or enter your own topic:").classes('text-sm text-gray-500 mt-2')
-            custom_input = ui.input(placeholder="e.g. volcanoes, chess, ancient Egypt…").classes('w-full')
-
             error_label = ui.label('').classes('text-red-500 text-sm hidden')
 
             def _on_start():
-                topic = custom_input.value.strip() or selected_topic['value']
+                topic = selected_topic['value']
                 if not topic:
-                    error_label.set_text('Please choose a category or enter a topic.')
+                    error_label.set_text('Please choose a category first.')
                     error_label.classes(remove='hidden')
                     return
                 error_label.classes(add='hidden')
@@ -197,7 +198,7 @@ async def session_page():
         _show_loading_screen(topic)
 
         profile = get_profile(user_id, access_token)
-        reading_level = (profile or {}).get('reading_level', 'Grade 6')
+        reading_level = (profile or {}).get('reading_level', '800L')
         state['reading_level'] = reading_level
 
         loop = asyncio.get_event_loop()
@@ -258,8 +259,10 @@ async def session_page():
         word = word_data['word']
         sentence = word_data['sentence']
         definition = word_data['definition']
-        choices = word_data['choices']
-        correct_index = word_data['correct_index']
+        choices = list(word_data['choices'])
+        correct_answer = choices[word_data['correct_index']]
+        random.shuffle(choices)
+        correct_index = choices.index(correct_answer)
         total = state['vocab_total_words']
         advanced = {'done': False}
 

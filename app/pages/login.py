@@ -11,7 +11,7 @@ async def login_page(error: str = ''):
     client = get_client()
 
     with ui.card().classes('absolute-center w-96'):
-        ui.label('Reading Tutor').classes('text-2xl font-bold text-center w-full')
+        ui.label('uMaRead').classes('text-2xl font-bold text-center w-full')
         ui.separator()
 
         # Google OAuth

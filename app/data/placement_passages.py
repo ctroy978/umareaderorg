@@ -295,14 +295,14 @@ def compute_reading_level(answers: list[dict]) -> tuple[str, str]:
     """Score MC questions only; short-answer (correct_answer is None) are unscored."""
     mc_answers = [a for a in answers if a.get("is_correct") is not None]
     if not mc_answers:
-        return ("Level 1", "600L")
+        return ("600L", "~600L")
     correct = sum(1 for a in mc_answers if a["is_correct"])
     pct = correct / len(mc_answers)
     if pct < 0.40:
-        return ("Level 1", "600L")
+        return ("600L", "~600L")
     elif pct < 0.60:
-        return ("Level 2", "700L-900L")
+        return ("800L", "700L-900L")
     elif pct < 0.80:
-        return ("Level 3", "900L-1100L")
+        return ("1000L", "900L-1100L")
     else:
-        return ("Level 4", "1100L+")
+        return ("1200L", "1100L+")

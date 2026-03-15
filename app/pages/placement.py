@@ -25,13 +25,13 @@ async def placement_page():
     answers: list[dict] = []
 
     try:
-        progress = get_placement_progress(user_id)
+        progress = get_placement_progress(user_id, access_token=access_token)
         if progress:
             passage_idx = progress.get('current_passage_index', 0)
             q_idx = progress.get('current_question_index', 0)
             answers = progress.get('answers', []) or []
         else:
-            save_placement_progress(user_id, 0, 0, [])
+            save_placement_progress(user_id, 0, 0, [], access_token=access_token)
     except Exception:
         pass
 
@@ -107,7 +107,7 @@ async def placement_page():
                         }
                         state['answers'].append(record)
                         try:
-                            save_placement_response(user_id, p['id'], q['id'], sel['value'], is_correct)
+                            save_placement_response(user_id, p['id'], q['id'], sel['value'], is_correct, access_token=access_token)
                         except Exception:
                             pass
                         advance()
@@ -130,7 +130,7 @@ async def placement_page():
                         }
                         state['answers'].append(record)
                         try:
-                            save_placement_response(user_id, p['id'], q['id'], answer_text, None)
+                            save_placement_response(user_id, p['id'], q['id'], answer_text, None, access_token=access_token)
                         except Exception:
                             pass
                         advance()
@@ -165,6 +165,7 @@ async def placement_page():
                 state['passage_idx'],
                 state['q_idx'],
                 state['answers'],
+                access_token=access_token,
             )
         except Exception:
             pass
@@ -196,7 +197,7 @@ async def placement_page():
         except Exception:
             pass
         try:
-            delete_placement_progress(user_id)
+            delete_placement_progress(user_id, access_token=access_token)
         except Exception:
             pass
         ui.navigate.to('/placement-result')

@@ -138,7 +138,7 @@ def assess_gist_and_mastery(
         initial_state = {
             "mode": "assess",
             "full_text": full_text,
-            "reading_level": "Grade 6",
+            "reading_level": "800L",
             "gist": gist,
             "mastery_answers": mastery_answers,
             "mastery_questions": None,

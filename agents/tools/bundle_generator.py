@@ -3,8 +3,14 @@ Orchestrates pre-generation of a full session bundle before the student starts.
 
 Called from session.py via loop.run_in_executor so it runs in a thread pool.
 All steps are blocking/synchronous — no async inside this module.
+
+Parallelism strategy:
+  Step 1 (text_selection) must finish first — everything depends on its output.
+  Steps 2+3 (comp_coach ×4 and mastery questions) are independent of each other
+  and run concurrently via ThreadPoolExecutor.
 """
-import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.supabase_client import update_session_bundle, fail_session_bundle
 from agents.tools.text_selection_tool import select_stretch_text_tool
@@ -12,6 +18,43 @@ from agents.tools.comprehension_coach_tool import coach_comprehension_pause
 from agents.tools.assessment_tool import generate_mastery_questions
 
 _COMP_STRATEGIES = ["main idea", "inference", "question generation", "main idea"]
+
+
+def _log(msg: str) -> None:
+    print(f"[bundle {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def _run_comp_coach(i: int, section: dict, strategy: str, reading_level: str, user_id: str) -> dict:
+    _log(f"comp_coach section {i+1}/4 (strategy='{strategy}') starting")
+    t0 = time.monotonic()
+    result = coach_comprehension_pause(
+        text_section=section["text"],
+        student_response=None,
+        strategy=strategy,
+        student_level=reading_level,
+        session_id=None,
+        student_id=user_id,
+    )
+    _log(f"comp_coach section {i+1}/4 done in {time.monotonic()-t0:.1f}s")
+    return {
+        "section_index": i,
+        "strategy": strategy,
+        "prompt": result["prompt"],
+        "rubric": result.get("rationale", ""),
+    }
+
+
+def _run_mastery(full_text: str, reading_level: str, user_id: str) -> list:
+    _log("mastery question generation starting")
+    t0 = time.monotonic()
+    questions = generate_mastery_questions(
+        full_text=full_text,
+        reading_level=reading_level,
+        session_id=None,
+        student_id=user_id,
+    )
+    _log(f"mastery questions done in {time.monotonic()-t0:.1f}s — {len(questions)} questions")
+    return questions
 
 
 def generate_session_bundle(
@@ -26,8 +69,13 @@ def generate_session_bundle(
 
     On any failure, marks the bundle as 'error'.
     """
+    bundle_start = time.monotonic()
+    _log(f"START bundle={bundle_id} topic='{topic}' level='{reading_level}'")
+
     try:
-        # Step 1: Generate passage + vocab
+        # ── Step 1: passage + vocab (must complete before anything else) ──────
+        _log("step 1/3: text_selection starting")
+        t0 = time.monotonic()
         content = select_stretch_text_tool(
             student_id=user_id,
             session_id=None,
@@ -37,36 +85,46 @@ def generate_session_bundle(
         sections = content["sections"]
         title = content["title"]
         vocab = content["vocab"]
+        topic_bank_id = content.get("topic_bank_id")
         full_text = "\n\n".join(s["text"] for s in sections)
-
-        # Step 2: Generate comprehension questions (one per section)
-        comprehension_questions = []
-        for i, section in enumerate(sections):
-            strategy = _COMP_STRATEGIES[i % len(_COMP_STRATEGIES)]
-            result = coach_comprehension_pause(
-                text_section=section["text"],
-                student_response=None,
-                strategy=strategy,
-                student_level=reading_level,
-                session_id=None,
-                student_id=user_id,
-            )
-            comprehension_questions.append({
-                "section_index": i,
-                "strategy": strategy,
-                "prompt": result["prompt"],
-                "rubric": result.get("rationale", ""),
-            })
-
-        # Step 3: Generate mastery questions (2 MC + 1 SA)
-        mastery_questions = generate_mastery_questions(
-            full_text=full_text,
-            reading_level=reading_level,
-            session_id=None,
-            student_id=user_id,
+        _log(
+            f"step 1/3: text_selection done in {time.monotonic()-t0:.1f}s"
+            f" — '{title}' ({len(sections)} sections, {len(vocab)} vocab)"
         )
 
-        # Step 4: Apply safety defaults for new fields
+        # ── Steps 2+3: comp_coach ×4 and mastery run in parallel ─────────────
+        _log("step 2+3: launching comp_coach ×4 and mastery in parallel")
+        t0 = time.monotonic()
+
+        comp_results = [None] * len(sections)
+        mastery_questions = None
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            # Submit comp_coach for each section
+            comp_futures = {
+                pool.submit(
+                    _run_comp_coach,
+                    i,
+                    section,
+                    _COMP_STRATEGIES[i % len(_COMP_STRATEGIES)],
+                    reading_level,
+                    user_id,
+                ): i
+                for i, section in enumerate(sections)
+            }
+            # Submit mastery generation
+            mastery_future = pool.submit(_run_mastery, full_text, reading_level, user_id)
+
+            # Collect comp results in original section order
+            for future in as_completed(comp_futures):
+                idx = comp_futures[future]
+                comp_results[idx] = future.result()
+
+            mastery_questions = mastery_future.result()
+
+        _log(f"step 2+3: parallel phase done in {time.monotonic()-t0:.1f}s")
+
+        # ── Apply safety defaults for new fields ──────────────────────────────
         for q in mastery_questions:
             if q.get("type") == "short_answer":
                 q.setdefault("source_span", "")
@@ -74,22 +132,26 @@ def generate_session_bundle(
             elif q.get("type") == "multiple_choice":
                 q.setdefault("explanation", "")
 
-        # Step 5: Static reflection question
         reflection_question = (
             f"If you could ask the author of '{title}' one question, what would it be and why?"
         )
 
-        # Step 6: Persist everything
+        # ── Persist ───────────────────────────────────────────────────────────
+        _log("persisting bundle to database")
         update_session_bundle(
             bundle_id,
             passage_title=title,
             passage_text=full_text,
             passage_sections=sections,
             vocab_questions=vocab,
-            comprehension_questions=comprehension_questions,
+            comprehension_questions=comp_results,
             mastery_questions=mastery_questions,
             reflection_question=reflection_question,
+            topic_bank_id=topic_bank_id,
         )
 
+        _log(f"DONE total={time.monotonic()-bundle_start:.1f}s status=ready")
+
     except Exception as exc:
+        _log(f"ERROR after {time.monotonic()-bundle_start:.1f}s: {exc}")
         fail_session_bundle(bundle_id, str(exc))

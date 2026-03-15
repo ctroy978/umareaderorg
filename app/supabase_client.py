@@ -41,14 +41,14 @@ def upsert_profile(user_id: str, data: dict, access_token: str | None = None):
     client.table("profiles").upsert(payload, on_conflict="user_id").execute()
 
 
-def get_placement_progress(user_id: str):
-    client = get_client()
+def get_placement_progress(user_id: str, access_token: str | None = None):
+    client = _authed_client(access_token) if access_token else get_client()
     response = client.table("placement_progress").select("*").eq("user_id", user_id).maybe_single().execute()
     return response.data
 
 
-def save_placement_progress(user_id: str, passage_idx: int, q_idx: int, answers: list):
-    client = get_client()
+def save_placement_progress(user_id: str, passage_idx: int, q_idx: int, answers: list, access_token: str | None = None):
+    client = _authed_client(access_token) if access_token else get_client()
     client.table("placement_progress").upsert(
         {
             "user_id": user_id,
@@ -61,8 +61,8 @@ def save_placement_progress(user_id: str, passage_idx: int, q_idx: int, answers:
     ).execute()
 
 
-def save_placement_response(user_id: str, passage_id: str, q_id: str, answer: str, is_correct):
-    client = get_client()
+def save_placement_response(user_id: str, passage_id: str, q_id: str, answer: str, is_correct, access_token: str | None = None):
+    client = _authed_client(access_token) if access_token else get_client()
     client.table("placement_responses").insert(
         {
             "user_id": user_id,
@@ -74,8 +74,8 @@ def save_placement_response(user_id: str, passage_id: str, q_id: str, answer: st
     ).execute()
 
 
-def delete_placement_progress(user_id: str):
-    client = get_client()
+def delete_placement_progress(user_id: str, access_token: str | None = None):
+    client = _authed_client(access_token) if access_token else get_client()
     client.table("placement_progress").delete().eq("user_id", user_id).execute()
 
 
@@ -118,6 +118,27 @@ def get_active_bundle(user_id: str) -> dict | None:
             .in_("status", ["generating", "ready"])
             .order("created_at", desc=True).limit(1).execute())
     return resp.data[0] if resp.data else None
+
+
+def get_topic_from_bank(category: str, user_id: str) -> dict | None:
+    """Return a random unused topic for this student in the given category, or None."""
+    client = get_client()
+    used_resp = (client.table("session_bundles")
+                 .select("topic_bank_id")
+                 .eq("user_id", user_id)
+                 .not_.is_("topic_bank_id", "null")
+                 .execute())
+    used_ids = [r["topic_bank_id"] for r in used_resp.data if r.get("topic_bank_id")]
+
+    query = client.table("topic_bank").select("*").eq("category", category)
+    if used_ids:
+        query = query.not_.in_("id", used_ids)
+    resp = query.execute()
+
+    if not resp.data:
+        return None
+    import random
+    return random.choice(resp.data)
 
 
 # --- Session helpers ---

@@ -48,7 +48,7 @@ async def root():
 
 
 def main():
-    ui.run(title='Reading Tutor', storage_secret=STORAGE_SECRET, port=8080, reload=False)
+    ui.run(title='uMaRead', storage_secret=STORAGE_SECRET, port=8080, reload=False)
 
 
 if __name__ == '__main__':
