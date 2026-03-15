@@ -1,5 +1,5 @@
 from nicegui import app, ui
-from app.supabase_client import get_profile
+from app.supabase_client import get_last_completed_session, get_profile
 
 
 @ui.page('/dashboard')
@@ -12,12 +12,18 @@ async def dashboard_page():
 
     display_name = email
     reading_level = None
+    last_session = None
     try:
         profile = get_profile(user_id)
         if profile:
             if profile.get('full_name'):
                 display_name = profile['full_name']
             reading_level = profile.get('reading_level')
+    except Exception:
+        pass
+
+    try:
+        last_session = get_last_completed_session(user_id)
     except Exception:
         pass
 
@@ -37,10 +43,23 @@ async def dashboard_page():
                     'color=primary outline'
                 )
 
-        ui.button('Start Today\'s Reading Session', icon='menu_book').classes('w-full text-lg').props(
-            'color=primary disable'
-        )
-        ui.label('Reading sessions coming in Phase 3').classes('text-xs text-gray-400')
+        ui.button(
+            "Start Today's Reading Session",
+            icon='menu_book',
+            on_click=lambda: ui.navigate.to('/session'),
+        ).classes('w-full text-lg').props('color=primary')
+
+        # Last session card
+        with ui.card().classes('w-full p-4 gap-1'):
+            ui.label('Last Session').classes('text-xs text-gray-400 uppercase tracking-wide')
+            if last_session:
+                completed_at = last_session.get('completed_at', '')
+                date_str = completed_at[:10] if completed_at else 'Unknown date'
+                with ui.row().classes('items-center gap-2'):
+                    ui.label(date_str).classes('text-base font-medium')
+                    ui.badge('Completed', color='green')
+            else:
+                ui.label('No sessions yet — start your first one!').classes('text-gray-400 text-sm')
 
         ui.separator()
 

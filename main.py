@@ -10,6 +10,7 @@ importlib.import_module('app.pages.dashboard')
 importlib.import_module('app.pages.welcome')
 importlib.import_module('app.pages.placement')
 importlib.import_module('app.pages.placement_result')
+importlib.import_module('app.pages.session')
 
 from app.supabase_client import exchange_code_for_session, get_profile
 from utils.config import STORAGE_SECRET
