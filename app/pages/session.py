@@ -466,6 +466,8 @@ async def session_page():
 
                 feedback_col = ui.column().classes('w-full gap-2 hidden')
 
+                attempt = {'count': 0, 'first_answer': None}
+
                 def _on_submit_reading():
                     if not answer_input.value.strip():
                         ui.notify('Please write something before submitting.', type='warning')
@@ -480,11 +482,17 @@ async def session_page():
                 ).props('color=primary')
 
         async def _evaluate_reading(student_response: str):
+            attempt['count'] += 1
+            if attempt['count'] == 1:
+                attempt['first_answer'] = student_response
+            is_retry = attempt['count'] > 1
+
             loop = asyncio.get_event_loop()
             feedback_text = await loop.run_in_executor(
                 None,
                 lambda: get_feedback(
                     'comprehension',
+                    is_retry=is_retry,
                     section_text=section['text'],
                     question=prompt_text,
                     rubric=rubric,
@@ -492,16 +500,32 @@ async def session_page():
                 ),
             )
             spinner_row.classes(add='hidden')
+            feedback_col.clear()
             feedback_col.classes(remove='hidden')
             with feedback_col:
-                with ui.row().classes('items-start gap-2'):
-                    ui.icon('info').classes('text-blue-500 text-xl')
-                    ui.label(feedback_text).classes('text-sm text-gray-700')
-                ui.button(
-                    'Continue Reading →',
-                    on_click=lambda: _advance_reading(prompt_text, feedback_text, student_response),
-                ).props('color=primary')
-            _save_response('reading_pause', prompt_text, student_response, feedback_text, None)
+                with ui.element('div').classes('w-full rounded-lg bg-blue-50 p-4'):
+                    ui.label(feedback_text).classes('text-base leading-relaxed text-gray-800')
+                with ui.row().classes('gap-2 mt-2'):
+                    if attempt['count'] == 1:
+                        def _try_again():
+                            answer_input.enable()
+                            answer_input.set_value(attempt['first_answer'])
+                            submit_btn.enable()
+                            feedback_col.classes(add='hidden')
+                        ui.button('Try Again', on_click=_try_again).props('flat color=primary')
+
+                    def _continue_reading(fb=feedback_text, sr=student_response):
+                        if attempt['count'] >= 2:
+                            combined = f"[Attempt 1] {attempt['first_answer']}\n\n[Attempt 2] {sr}"
+                        else:
+                            combined = sr
+                        _save_response('reading_pause', prompt_text, combined, fb, None)
+                        _advance_reading(prompt_text, fb, combined)
+
+                    ui.button(
+                        'Continue Reading →',
+                        on_click=_continue_reading,
+                    ).props('color=primary')
 
     def _advance_reading(pause_prompt, feedback_text, answer):
         state['reading_section'] += 1
@@ -549,6 +573,8 @@ async def session_page():
                 feedback_col = ui.column().classes('w-full gap-2 hidden')
                 reflection_col = ui.column().classes('w-full gap-3 hidden')
 
+                attempt = {'count': 0, 'first_answer': None}
+
                 gist_btn = ui.button('Submit Summary', on_click=lambda: submit_gist()).props('color=primary')
 
                 def submit_gist():
@@ -561,26 +587,47 @@ async def session_page():
                     asyncio.create_task(_evaluate_gist(gist_input.value))
 
                 async def _evaluate_gist(gist_text: str):
+                    attempt['count'] += 1
+                    if attempt['count'] == 1:
+                        attempt['first_answer'] = gist_text
+                    is_retry = attempt['count'] > 1
+
                     loop = asyncio.get_event_loop()
                     feedback_text = await loop.run_in_executor(
                         None,
                         lambda: get_feedback(
                             'gist',
+                            is_retry=is_retry,
                             full_passage=full_passage,
                             student_gist=gist_text,
                         ),
                     )
-                    state['_last_gist'] = gist_text
                     update_progress(2, 0.5)
                     spinner_row.classes(add='hidden')
+                    feedback_col.clear()
                     feedback_col.classes(remove='hidden')
                     with feedback_col:
-                        with ui.row().classes('items-start gap-2'):
-                            ui.icon('info').classes('text-blue-500 text-xl')
-                            ui.label(feedback_text).classes('text-sm text-gray-700')
+                        with ui.element('div').classes('w-full rounded-lg bg-blue-50 p-4'):
+                            ui.label(feedback_text).classes('text-base leading-relaxed text-gray-800')
+                        if attempt['count'] == 1:
+                            with ui.row().classes('gap-2 mt-2'):
+                                def _try_again():
+                                    gist_input.enable()
+                                    gist_input.set_value(attempt['first_answer'])
+                                    gist_btn.enable()
+                                    feedback_col.classes(add='hidden')
+                                ui.button('Try Again', on_click=_try_again).props('flat color=primary')
 
-                    reflection_col.classes(remove='hidden')
-                    _save_response('gist', 'Gist summary', gist_text, feedback_text, None)
+                                def _show_reflection(fb=feedback_text, gt=gist_text):
+                                    state['_last_gist'] = gt
+                                    _save_response('gist', 'Gist summary', gt, fb, None)
+                                    reflection_col.classes(remove='hidden')
+                                ui.button('Continue', on_click=_show_reflection).props('color=primary')
+                        else:
+                            combined = f"[Attempt 1] {attempt['first_answer']}\n\n[Attempt 2] {gist_text}"
+                            state['_last_gist'] = gist_text
+                            _save_response('gist', 'Gist summary', combined, feedback_text, None)
+                            reflection_col.classes(remove='hidden')
 
                 with reflection_col:
                     ui.separator()
@@ -658,6 +705,7 @@ async def session_page():
 
                 else:  # short_answer
                     text_input = ui.textarea(placeholder='Write your answer here…').classes('w-full')
+                    sa_attempt = {'count': 0, 'first_answer': None}
 
                     sa_btn = ui.button('Submit Answer', on_click=lambda: submit_sa()).props('color=primary')
 
@@ -671,11 +719,17 @@ async def session_page():
                         asyncio.create_task(_eval_sa(q, inp.value, sp, fb))
 
                     async def _eval_sa(q, answer, sp, fb):
+                        sa_attempt['count'] += 1
+                        if sa_attempt['count'] == 1:
+                            sa_attempt['first_answer'] = answer
+                        is_retry = sa_attempt['count'] > 1
+
                         loop = asyncio.get_event_loop()
                         feedback_text = await loop.run_in_executor(
                             None,
                             lambda: get_feedback(
                                 'mastery_sa',
+                                is_retry=is_retry,
                                 question=q['text'],
                                 source_span=q.get('source_span', ''),
                                 key_points=q.get('key_points', []),
@@ -683,15 +737,31 @@ async def session_page():
                             ),
                         )
                         sp.classes(add='hidden')
+                        fb.clear()
                         fb.classes(remove='hidden')
                         qs = questions
                         with fb:
-                            with ui.row().classes('items-start gap-2'):
-                                ui.icon('info').classes('text-blue-500 text-xl')
-                                ui.label(feedback_text).classes('text-sm text-gray-700')
+                            with ui.element('div').classes('w-full rounded-lg bg-blue-50 p-4'):
+                                ui.label(feedback_text).classes('text-base leading-relaxed text-gray-800')
                             label = 'Next Question →' if state['mastery_idx'] < len(qs) - 1 else 'See Results →'
-                            ui.button(label, on_click=lambda: _advance_mastery(q, None, feedback_text, answer)).props('color=primary')
-                        _save_response('mastery', q['text'], answer, feedback_text, None)
+                            with ui.row().classes('gap-2 mt-2'):
+                                if sa_attempt['count'] == 1:
+                                    def _try_again_sa():
+                                        text_input.enable()
+                                        text_input.set_value(sa_attempt['first_answer'])
+                                        sa_btn.enable()
+                                        fb.classes(add='hidden')
+                                    ui.button('Try Again', on_click=_try_again_sa).props('flat color=primary')
+
+                                def _continue_sa(fb_text=feedback_text, ans=answer):
+                                    if sa_attempt['count'] >= 2:
+                                        combined = f"[Attempt 1] {sa_attempt['first_answer']}\n\n[Attempt 2] {ans}"
+                                    else:
+                                        combined = ans
+                                    _save_response('mastery', q['text'], combined, fb_text, None)
+                                    _advance_mastery(q, None, fb_text, combined)
+
+                                ui.button(label, on_click=_continue_sa).props('color=primary')
 
     def _advance_mastery(question, is_correct, feedback_text, answer):
         state['mastery_idx'] += 1

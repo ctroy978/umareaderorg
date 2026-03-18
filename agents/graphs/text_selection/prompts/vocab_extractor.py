@@ -16,6 +16,7 @@ Requirements:
 - Prefer discipline-specific or advanced general-academic vocabulary
 - Distractors must be plausible (related to the passage topic) but clearly wrong on reflection
 - feedback_correct and feedback_incorrect should reference the passage context
+- Place the correct choice at a DIFFERENT position for each word (vary correct_index across 0, 1, 2, 3 — do not default to 0)
 
 Return ONLY valid JSON (no markdown, no code fences):
 {
@@ -25,7 +26,7 @@ Return ONLY valid JSON (no markdown, no code fences):
       "sentence": "...",
       "definition": "...",
       "choices": ["...", "...", "...", "..."],
-      "correct_index": 0,
+      "correct_index": 2,
       "feedback_correct": "...",
       "feedback_incorrect": "..."
     }
