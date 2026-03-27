@@ -13,7 +13,7 @@ async def welcome_page():
     # If already onboarded, skip to dashboard
     try:
         profile = get_profile(user_id, access_token=access_token)
-        if profile and profile.get('onboarded'):
+        if profile and (profile.get('onboarded') or profile.get('reading_level')):
             return ui.navigate.to('/dashboard')
     except Exception:
         pass

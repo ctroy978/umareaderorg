@@ -781,10 +781,21 @@ async def session_page():
         except Exception:
             pass
 
+        # Adaptive level adjustment (fire-and-forget, never blocks UI)
+        band_changed = False
+        try:
+            from app.level_adjuster import run_level_adjustment
+            profile = get_profile(user_id, access_token)
+            band_changed = run_level_adjustment(user_id, state['session_id'], profile, access_token)
+        except Exception:
+            band_changed = False
+
         with content_area:
             with ui.column().classes('items-center w-full gap-6 py-8'):
                 ui.icon('emoji_events', size='4rem').classes('text-yellow-500')
                 ui.label('Session Complete!').classes('text-3xl font-bold text-center')
+                if band_changed:
+                    ui.label('Level up!').classes('text-green-600 font-semibold text-lg text-center')
                 ui.label('You finished the full reading session.').classes('text-gray-600 text-center text-lg')
 
                 if total_mc > 0:

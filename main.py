@@ -33,7 +33,7 @@ async def auth_callback(request: Request):
         access_token = result.session.access_token
         try:
             profile = get_profile(user_id, access_token=access_token)
-            if profile and profile.get('onboarded'):
+            if profile and (profile.get('onboarded') or profile.get('reading_level')):
                 return RedirectResponse('/dashboard')
         except Exception:
             pass

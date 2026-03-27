@@ -236,6 +236,12 @@ def log_agent_run(
         pass
 
 
+def get_session_responses(session_id: str) -> list[dict]:
+    client = get_client()
+    resp = client.table("session_responses").select("*").eq("session_id", session_id).execute()
+    return resp.data or []
+
+
 def get_last_completed_session(student_id: str) -> dict | None:
     client = get_client()
     response = (
