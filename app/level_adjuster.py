@@ -50,7 +50,8 @@ def _check_band_change(new_current: float, current_band: str, history: list) -> 
 
 
 def run_level_adjustment(
-    student_id: str, session_id: str, profile: dict, access_token: str
+    student_id: str, session_id: str, profile: dict, access_token: str,
+    strategy: str | None = None,
 ) -> bool:
     """Update current_level and possibly reading_level after a completed session.
 
@@ -70,7 +71,10 @@ def run_level_adjustment(
     new_current = round(current + ALPHA * delta, 1)
 
     history: list = list((profile or {}).get("level_history") or [])
-    history.append({"current_level": new_current, "session_id": session_id})
+    entry: dict = {"current_level": new_current, "session_id": session_id}
+    if strategy:
+        entry["strategy"] = strategy
+    history.append(entry)
     history = history[-10:]
 
     new_band = _check_band_change(new_current, current_band, history)

@@ -143,11 +143,13 @@ def get_topic_from_bank(category: str, user_id: str) -> dict | None:
 
 # --- Session helpers ---
 
-def create_session(student_id: str, bundle_id: str | None = None) -> str:
+def create_session(student_id: str, bundle_id: str | None = None, strategy: str | None = None) -> str:
     client = get_client()
     payload = {"student_id": student_id}
     if bundle_id:
         payload["bundle_id"] = bundle_id
+    if strategy:
+        payload["strategy_of_session"] = strategy
     response = client.table("sessions").insert(payload).execute()
     return response.data[0]["id"]
 
@@ -167,6 +169,13 @@ def complete_session(session_id: str, responses_json: dict):
             "completed_at": "now()",
             "responses_json": responses_json,
         }
+    ).eq("id", session_id).execute()
+
+
+def soft_delete_session(session_id: str):
+    client = get_client()
+    client.table("sessions").update(
+        {"deleted_at": "now()"}
     ).eq("id", session_id).execute()
 
 
@@ -240,6 +249,66 @@ def get_session_responses(session_id: str) -> list[dict]:
     client = get_client()
     resp = client.table("session_responses").select("*").eq("session_id", session_id).execute()
     return resp.data or []
+
+
+def get_recent_strategies(student_id: str, limit: int = 3) -> list[str]:
+    """Return strategy_of_session values from the student's most recent completed sessions."""
+    client = get_client()
+    resp = (
+        client.table("sessions")
+        .select("strategy_of_session")
+        .eq("student_id", student_id)
+        .eq("status", "completed")
+        .not_.is_("strategy_of_session", "null")
+        .order("completed_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return [r["strategy_of_session"] for r in (resp.data or []) if r.get("strategy_of_session")]
+
+
+def get_available_strategies(reading_level: str) -> list[str]:
+    """Return distinct active strategy names available for a given reading level."""
+    client = get_client()
+    resp = (
+        client.table("strategy_lessons")
+        .select("strategy")
+        .eq("reading_level", reading_level)
+        .eq("is_active", True)
+        .execute()
+    )
+    return list({r["strategy"] for r in (resp.data or []) if r.get("strategy")})
+
+
+def get_strategy_lesson(strategy: str, reading_level: str) -> dict | None:
+    """Fetch the active strategy lesson for a given strategy + reading level (variation_id=1)."""
+    client = get_client()
+    resp = (
+        client.table("strategy_lessons")
+        .select("*")
+        .eq("strategy", strategy)
+        .eq("reading_level", reading_level)
+        .eq("variation_id", 1)
+        .eq("is_active", True)
+        .maybe_single()
+        .execute()
+    )
+    return resp.data
+
+
+def get_session_strategy(session_id: str) -> str | None:
+    """Return strategy_of_session for a given session, or None if not set."""
+    client = get_client()
+    resp = (
+        client.table("sessions")
+        .select("strategy_of_session")
+        .eq("id", session_id)
+        .maybe_single()
+        .execute()
+    )
+    if resp.data:
+        return resp.data.get("strategy_of_session")
+    return None
 
 
 def get_last_completed_session(student_id: str) -> dict | None:

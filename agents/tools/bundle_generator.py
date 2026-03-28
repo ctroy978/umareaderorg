@@ -12,20 +12,27 @@ Parallelism strategy:
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from app.supabase_client import update_session_bundle, fail_session_bundle
+from app.supabase_client import (
+    update_session_bundle,
+    fail_session_bundle,
+    get_available_strategies,
+    get_recent_strategies,
+)
 from agents.tools.text_selection_tool import select_stretch_text_tool
 from agents.tools.comprehension_coach_tool import coach_comprehension_pause
 from agents.tools.assessment_tool import generate_mastery_questions
+from agents.tools.strategy_selector import select_strategy
 
 _COMP_STRATEGIES = ["main idea", "inference", "question generation", "main idea"]
+_STRATEGY_CHUNK_INDEX = 1  # second chunk (0-based) gets the targeted strategy question
 
 
 def _log(msg: str) -> None:
     print(f"[bundle {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def _run_comp_coach(i: int, section: dict, strategy: str, reading_level: str, user_id: str) -> dict:
-    _log(f"comp_coach section {i+1}/4 (strategy='{strategy}') starting")
+def _run_comp_coach(i: int, section: dict, strategy: str, reading_level: str, user_id: str, is_strategy_question: bool = False) -> dict:
+    _log(f"comp_coach section {i+1}/4 (strategy='{strategy}'{' [STRATEGY Q]' if is_strategy_question else ''}) starting")
     t0 = time.monotonic()
     result = coach_comprehension_pause(
         text_section=section["text"],
@@ -41,6 +48,7 @@ def _run_comp_coach(i: int, section: dict, strategy: str, reading_level: str, us
         "strategy": strategy,
         "prompt": result["prompt"],
         "rubric": result.get("rationale", ""),
+        "is_strategy_question": is_strategy_question,
     }
 
 
@@ -73,6 +81,18 @@ def generate_session_bundle(
     _log(f"START bundle={bundle_id} topic='{topic}' level='{reading_level}'")
 
     try:
+        # ── Step 0: strategy selection ────────────────────────────────────────
+        _log("step 0: selecting reading strategy")
+        t0 = time.monotonic()
+        try:
+            available = get_available_strategies(reading_level) or ["Making Inferences"]
+            recent = get_recent_strategies(user_id, limit=3)
+            session_strategy = select_strategy(topic, reading_level, recent, available)
+        except Exception as e:
+            _log(f"step 0: strategy selection failed ({e}), using fallback")
+            session_strategy = "Making Inferences"
+        _log(f"step 0: strategy='{session_strategy}' in {time.monotonic()-t0:.1f}s")
+
         # ── Step 1: passage + vocab (must complete before anything else) ──────
         _log("step 1/3: text_selection starting")
         t0 = time.monotonic()
@@ -81,6 +101,8 @@ def generate_session_bundle(
             session_id=None,
             access_token=access_token,
             topic_override=topic,
+            strategy_hint=session_strategy,
+            strategy_chunk_index=_STRATEGY_CHUNK_INDEX,
         )
         sections = content["sections"]
         title = content["title"]
@@ -100,15 +122,16 @@ def generate_session_bundle(
         mastery_questions = None
 
         with ThreadPoolExecutor(max_workers=5) as pool:
-            # Submit comp_coach for each section
+            # Submit comp_coach for each section; strategy chunk gets the session strategy
             comp_futures = {
                 pool.submit(
                     _run_comp_coach,
                     i,
                     section,
-                    _COMP_STRATEGIES[i % len(_COMP_STRATEGIES)],
+                    session_strategy if i == _STRATEGY_CHUNK_INDEX else _COMP_STRATEGIES[i % len(_COMP_STRATEGIES)],
                     reading_level,
                     user_id,
+                    i == _STRATEGY_CHUNK_INDEX,
                 ): i
                 for i, section in enumerate(sections)
             }
@@ -148,6 +171,8 @@ def generate_session_bundle(
             mastery_questions=mastery_questions,
             reflection_question=reflection_question,
             topic_bank_id=topic_bank_id,
+            strategy_of_session=session_strategy,
+            strategy_chunk_index=_STRATEGY_CHUNK_INDEX,
         )
 
         _log(f"DONE total={time.monotonic()-bundle_start:.1f}s status=ready")

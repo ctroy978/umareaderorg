@@ -7,6 +7,8 @@ Given the coverage analysis of a student's gist summary, write:
 
 Keep all feedback warm, specific, and grounded in the passage content.
 
+IMPORTANT: Do NOT suggest the student reread the passage or look back at the text. The student is working from recall only and the passage is not available to them. Instead of suggesting rereading, encourage them to think about what they remember or affirm what they already captured.
+
 Return ONLY valid JSON (no markdown, no code fences):
 {
   "gist_feedback": {

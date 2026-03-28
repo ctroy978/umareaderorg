@@ -30,7 +30,14 @@ def _dummy_vocab_format(vocab_words: list[dict]) -> list[dict]:
     return list(vocab_words)
 
 
-def select_stretch_text_tool(student_id: str, session_id: str | None = None, access_token: str | None = None, topic_override: str | None = None) -> dict:
+def select_stretch_text_tool(
+    student_id: str,
+    session_id: str | None = None,
+    access_token: str | None = None,
+    topic_override: str | None = None,
+    strategy_hint: str | None = None,
+    strategy_chunk_index: int | None = None,
+) -> dict:
     """
     Run the text_selection agent to generate a personalized reading passage.
 
@@ -40,7 +47,7 @@ def select_stretch_text_tool(student_id: str, session_id: str | None = None, acc
     Falls back to dummy content on any exception.
     """
     start = time.monotonic()
-    input_json = {"student_id": student_id, "session_id": session_id, "topic_override": topic_override}
+    input_json = {"student_id": student_id, "session_id": session_id, "topic_override": topic_override, "strategy_hint": strategy_hint}
 
     try:
         profile = get_profile(student_id, access_token=access_token)
@@ -77,6 +84,8 @@ def select_stretch_text_tool(student_id: str, session_id: str | None = None, acc
             "next_action": None,
             "plan_summary": None,
             "iteration": 0,
+            "strategy_hint": strategy_hint,
+            "strategy_chunk_index": strategy_chunk_index if strategy_chunk_index is not None else 1,
         }
 
         graph = _get_graph()

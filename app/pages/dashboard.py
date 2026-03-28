@@ -1,5 +1,5 @@
 from nicegui import app, ui
-from app.supabase_client import get_last_completed_session, get_profile
+from app.supabase_client import get_last_completed_session, get_profile, get_recent_strategies
 
 
 @ui.page('/dashboard')
@@ -22,8 +22,14 @@ async def dashboard_page():
     except Exception:
         pass
 
+    recent_strategies = []
     try:
         last_session = get_last_completed_session(user_id)
+    except Exception:
+        pass
+
+    try:
+        recent_strategies = get_recent_strategies(user_id, limit=5)
     except Exception:
         pass
 
@@ -60,6 +66,22 @@ async def dashboard_page():
                     ui.badge('Completed', color='green')
             else:
                 ui.label('No sessions yet — start your first one!').classes('text-gray-400 text-sm')
+
+        # Recently practiced strategies card
+        if recent_strategies:
+            # Deduplicate while preserving order (most recent first)
+            seen = set()
+            unique_strategies = []
+            for s in recent_strategies:
+                if s not in seen:
+                    seen.add(s)
+                    unique_strategies.append(s)
+
+            with ui.card().classes('w-full p-4 gap-2'):
+                ui.label('Recently Practiced Strategies').classes('text-xs text-gray-400 uppercase tracking-wide')
+                with ui.row().classes('flex-wrap gap-2 mt-1'):
+                    for s in unique_strategies:
+                        ui.badge(s, color='primary').classes('text-sm px-2 py-1')
 
         ui.separator()
 

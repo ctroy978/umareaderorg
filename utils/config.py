@@ -7,3 +7,4 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 STORAGE_SECRET = os.environ["STORAGE_SECRET"]
 SITE_URL = os.environ.get("SITE_URL", "http://localhost:8080")
+DEFAULT_STRATEGY = os.environ.get("DEFAULT_STRATEGY")  # e.g. "Summarizing"; None in production

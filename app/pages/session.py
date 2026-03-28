@@ -14,11 +14,15 @@ from app.supabase_client import (
     get_active_session,
     get_profile,
     get_session_bundle,
+    get_session_strategy,
+    get_strategy_lesson,
     save_session_response,
+    soft_delete_session,
     update_session_step,
 )
 from agents.tools.bundle_generator import generate_session_bundle
 from agents.tools.feedback_tool import get_feedback
+from utils.config import DEFAULT_STRATEGY  # dev override; None in production
 
 TOTAL_STEPS = 4
 STEP_LABELS = ["Vocab Preview", "Supported Reading", "Gist & Reflection", "Mastery Check"]
@@ -67,6 +71,8 @@ async def session_page():
         'gist_done': False,
         'reading_level': '800L',
         '_last_gist': '',
+        'strategy_of_session': None,
+        'strategy_chunk_index': None,
     }
 
     # ── Top-level layout ──────────────────────────────────────────────────────
@@ -134,6 +140,7 @@ async def session_page():
         state['vocab_words'] = vocab
         state['vocab_main_queue'] = list(vocab)
         state['vocab_total_words'] = len(vocab)
+        state['strategy_chunk_index'] = bundle.get('strategy_chunk_index')
 
     # ── Topic picker ──────────────────────────────────────────────────────────
 
@@ -186,7 +193,7 @@ async def session_page():
                 ui.spinner(size='xl')
                 ui.label('Preparing your session…').classes('text-gray-700 text-xl font-semibold text-center')
                 ui.label(f'Topic: {topic}').classes('text-gray-500 text-base text-center')
-                ui.label('This takes about 15–30 seconds. You\'ll only wait once.').classes(
+                ui.label('This may take several minutes. You\'ll only wait once.').classes(
                     'text-gray-400 text-sm text-center italic'
                 )
 
@@ -211,7 +218,9 @@ async def session_page():
         if bundle and bundle.get('status') == 'ready':
             _load_bundle_into_state(bundle)
             try:
-                sid = create_session(user_id, bundle_id=bundle_id)
+                # Strategy is set by AI during bundle generation; DEFAULT_STRATEGY overrides for dev testing
+                strategy = DEFAULT_STRATEGY or (bundle or {}).get('strategy_of_session')
+                sid = create_session(user_id, bundle_id=bundle_id, strategy=strategy)
                 state['session_id'] = sid
             except Exception:
                 ui.notify('Could not start session. Please try again.', type='negative')
@@ -418,6 +427,72 @@ async def session_page():
                 ui.label(
                     "Now let's read the passage together. Take your time!"
                 ).classes('text-gray-500 text-center')
+                ui.button(
+                    'Start Reading →',
+                    on_click=render_mini_lesson_step,
+                ).props('color=primary')
+
+    def render_mini_lesson_step():
+        """Display the strategy mini-lesson card between vocab and reading.
+
+        Fetches strategy_of_session fresh from the DB so it works for both
+        newly-created and resumed sessions. If no strategy is set or no lesson
+        is found, skips straight to the reading step.
+        """
+        try:
+            strategy = get_session_strategy(state['session_id'])
+        except Exception:
+            strategy = None
+        state['strategy_of_session'] = strategy
+
+        if not strategy:
+            _go_to_step(1)
+            return
+
+        try:
+            lesson = get_strategy_lesson(strategy, state['reading_level'])
+        except Exception:
+            lesson = None
+
+        if not lesson:
+            _go_to_step(1)
+            return
+
+        content_area.clear()
+        update_progress(0, 1.0)
+
+        with content_area:
+            with ui.column().classes('items-center w-full gap-4 py-4'):
+                ui.label("Today's Reading Strategy").classes(
+                    'text-xs text-primary uppercase tracking-wide font-medium'
+                )
+                ui.label(lesson['title']).classes('text-2xl font-bold text-center')
+
+                with ui.card().classes('w-full p-6 gap-4'):
+                    ui.markdown(lesson['content']).classes(
+                        'text-base leading-relaxed text-gray-700'
+                    )
+
+                    if lesson.get('example_text') or lesson.get('example_application'):
+                        ui.separator()
+                        ui.label('Example').classes(
+                            'text-xs text-gray-400 uppercase tracking-wide'
+                        )
+                        if lesson.get('example_text'):
+                            ui.html(
+                                f'<p class="text-sm text-gray-600 italic leading-relaxed'
+                                f' border-l-4 border-primary pl-3">'
+                                f'{html_lib.escape(lesson["example_text"])}</p>'
+                            )
+                        if lesson.get('example_application'):
+                            ui.label(lesson['example_application']).classes(
+                                'text-sm text-gray-700 leading-relaxed'
+                            )
+
+                ui.label(
+                    "Keep this strategy in mind as you read today's passage."
+                ).classes('text-gray-500 text-center text-sm italic')
+
                 ui.button(
                     'Start Reading →',
                     on_click=lambda: _go_to_step(1),
@@ -786,7 +861,7 @@ async def session_page():
         try:
             from app.level_adjuster import run_level_adjustment
             profile = get_profile(user_id, access_token)
-            band_changed = run_level_adjustment(user_id, state['session_id'], profile, access_token)
+            band_changed = run_level_adjustment(user_id, state['session_id'], profile, access_token, strategy=state.get('strategy_of_session'))
         except Exception:
             band_changed = False
 
@@ -850,7 +925,10 @@ async def session_page():
                 ).classes('text-gray-600 text-center')
                 with ui.row().classes('gap-4'):
                     ui.button('Continue', on_click=lambda: asyncio.create_task(_resume_session(existing)), icon='play_arrow').props('color=primary')
-                    ui.button('Start Over', on_click=render_topic_picker).props('flat')
+                    def start_over():
+                        soft_delete_session(existing['id'])
+                        render_topic_picker()
+                    ui.button('Start Over', on_click=start_over).props('flat')
 
     async def _resume_session(existing: dict):
         bundle_id = existing.get('bundle_id')
@@ -889,6 +967,7 @@ async def session_page():
                     created_at = _dt.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
                     age_minutes = (_dt.datetime.now(_dt.timezone.utc) - created_at).total_seconds() / 60
                     if age_minutes > _STUCK_BUNDLE_MINUTES:
+                        soft_delete_session(existing['id'])
                         existing = None
         except Exception:
             pass

@@ -7,6 +7,7 @@ from agents.graphs.text_selection.prompts.text_generator import (
     TEXT_GENERATOR_SYSTEM,
     TEXT_GENERATOR_USER,
     JUDGE_FEEDBACK_SECTION,
+    STRATEGY_HINT_SECTION,
 )
 
 
@@ -21,9 +22,19 @@ def text_generator_node(state: TextSelectionState) -> dict:
             instructions=feedback.get("instructions", "Improve quality."),
         )
 
+    strategy_hint_section = ""
+    strategy_hint = state.get("strategy_hint")
+    if strategy_hint:
+        chunk_idx = state.get("strategy_chunk_index") or 1
+        strategy_hint_section = STRATEGY_HINT_SECTION.format(
+            section_number=chunk_idx + 1,
+            strategy=strategy_hint,
+        )
+
     user_msg = TEXT_GENERATOR_USER.format(
         topic=state["topic"],
         reading_level=state["reading_level"],
+        strategy_hint_section=strategy_hint_section,
         judge_feedback_section=judge_feedback_section,
     )
 

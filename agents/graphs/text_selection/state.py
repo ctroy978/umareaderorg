@@ -16,3 +16,5 @@ class TextSelectionState(TypedDict):
     next_action: Optional[str]
     plan_summary: Optional[str]
     iteration: int
+    strategy_hint: Optional[str]        # e.g. "Making Inferences"; enriches one chunk
+    strategy_chunk_index: Optional[int] # 0-based index of the chunk to enrich (default 1)

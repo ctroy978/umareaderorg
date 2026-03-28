@@ -31,9 +31,17 @@ Return ONLY valid JSON (no markdown, no code fences):
 }"""
 
 TEXT_GENERATOR_USER = """Topic: {topic}
-Reading Level: {reading_level}{judge_feedback_section}
+Reading Level: {reading_level}{strategy_hint_section}{judge_feedback_section}
 
 Write the passage."""
+
+STRATEGY_HINT_SECTION = """
+
+Strategy Enrichment: Section {section_number} of this passage should be written to naturally support the "{strategy}" reading comprehension strategy. Guidelines by strategy:
+- "Summarizing": Make this section densely informational with one clear main idea and 2-3 distinct supporting points that are easy to identify and retell.
+- "Making Inferences": Include one or two details that strongly imply an unstated conclusion — a cause, motivation, or consequence the reader must infer rather than read directly.
+- "Text Structure": Organize this section around an explicit rhetorical pattern (compare/contrast, problem/solution, or cause/effect) that a careful reader can name.
+The enrichment must feel natural within the passage — do not signal it to the reader or change the overall narrative flow."""
 
 JUDGE_FEEDBACK_SECTION = """
 
