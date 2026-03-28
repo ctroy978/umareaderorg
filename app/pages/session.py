@@ -16,6 +16,7 @@ from app.supabase_client import (
     get_session_bundle,
     get_session_strategy,
     get_strategy_lesson,
+    get_today_skip_count,
     save_session_response,
     soft_delete_session,
     update_session_step,
@@ -916,6 +917,12 @@ async def session_page():
 
         title_text = f'"{passage_title}"' if passage_title else 'your previous session'
 
+        skip_count = 0
+        try:
+            skip_count = get_today_skip_count(user_id)
+        except Exception:
+            pass
+
         with content_area:
             with ui.column().classes('items-center w-full gap-6 py-8'):
                 ui.icon('restore', size='3rem').classes('text-primary')
@@ -923,12 +930,17 @@ async def session_page():
                 ui.label(
                     f"You have an unfinished session at {STEP_LABELS[existing.get('current_step', 0)]}: {title_text}."
                 ).classes('text-gray-600 text-center')
-                with ui.row().classes('gap-4'):
+                with ui.row().classes('gap-4 items-center flex-wrap justify-center'):
                     ui.button('Continue', on_click=lambda: asyncio.create_task(_resume_session(existing)), icon='play_arrow').props('color=primary')
-                    def start_over():
-                        soft_delete_session(existing['id'])
-                        render_topic_picker()
-                    ui.button('Start Over', on_click=start_over).props('flat')
+                    if skip_count < 2:
+                        def start_over():
+                            soft_delete_session(existing['id'], user_id)
+                            render_topic_picker()
+                        ui.button('Choose a New Topic', on_click=start_over).props('flat')
+                    else:
+                        ui.label(
+                            "You've already switched topics twice today. Please finish this session."
+                        ).classes('text-sm text-orange-600 text-center')
 
     async def _resume_session(existing: dict):
         bundle_id = existing.get('bundle_id')
@@ -967,7 +979,7 @@ async def session_page():
                     created_at = _dt.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
                     age_minutes = (_dt.datetime.now(_dt.timezone.utc) - created_at).total_seconds() / 60
                     if age_minutes > _STUCK_BUNDLE_MINUTES:
-                        soft_delete_session(existing['id'])
+                        soft_delete_session(existing['id'], user_id)
                         existing = None
         except Exception:
             pass

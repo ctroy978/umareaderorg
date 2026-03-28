@@ -1,7 +1,8 @@
-from supabase import create_client, Client, ClientOptions
-from utils.config import SUPABASE_URL, SUPABASE_ANON_KEY
+from supabase import create_client, Client
+from utils.config import SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 
 _client: Client | None = None
+_service_client: Client | None = None
 
 
 def get_client() -> Client:
@@ -11,17 +12,19 @@ def get_client() -> Client:
     return _client
 
 
-def _authed_client(access_token: str) -> Client:
-    """Return a client authenticated as the user (satisfies RLS auth.uid() checks).
+def get_service_client() -> Client:
+    """Return a service-role client that bypasses RLS — for trusted server-side writes only."""
+    global _service_client
+    if _service_client is None:
+        _service_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    return _service_client
 
-    In supabase-py v2, the Authorization header must be set via ClientOptions so it
-    overrides the default anon-key bearer at client construction time.
-    """
-    return create_client(
-        SUPABASE_URL,
-        SUPABASE_ANON_KEY,
-        options=ClientOptions(headers={"Authorization": f"Bearer {access_token}"}),
-    )
+
+def _authed_client(access_token: str) -> Client:
+    """Return a client authenticated as the user (satisfies RLS auth.uid() checks)."""
+    client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    client.postgrest.auth(access_token)
+    return client
 
 
 def exchange_code_for_session(code: str):
@@ -36,9 +39,8 @@ def get_profile(user_id: str, access_token: str | None = None):
 
 
 def upsert_profile(user_id: str, data: dict, access_token: str | None = None):
-    client = _authed_client(access_token) if access_token else get_client()
     payload = {"user_id": user_id, **data}
-    client.table("profiles").upsert(payload, on_conflict="user_id").execute()
+    get_service_client().table("profiles").upsert(payload, on_conflict="user_id").execute()
 
 
 def get_placement_progress(user_id: str, access_token: str | None = None):
@@ -144,26 +146,23 @@ def get_topic_from_bank(category: str, user_id: str) -> dict | None:
 # --- Session helpers ---
 
 def create_session(student_id: str, bundle_id: str | None = None, strategy: str | None = None) -> str:
-    client = get_client()
     payload = {"student_id": student_id}
     if bundle_id:
         payload["bundle_id"] = bundle_id
     if strategy:
         payload["strategy_of_session"] = strategy
-    response = client.table("sessions").insert(payload).execute()
+    response = get_service_client().table("sessions").insert(payload).execute()
     return response.data[0]["id"]
 
 
 def update_session_step(session_id: str, step: int, responses_json: dict):
-    client = get_client()
-    client.table("sessions").update(
+    get_service_client().table("sessions").update(
         {"current_step": step, "responses_json": responses_json}
     ).eq("id", session_id).execute()
 
 
 def complete_session(session_id: str, responses_json: dict):
-    client = get_client()
-    client.table("sessions").update(
+    get_service_client().table("sessions").update(
         {
             "status": "completed",
             "completed_at": "now()",
@@ -172,11 +171,25 @@ def complete_session(session_id: str, responses_json: dict):
     ).eq("id", session_id).execute()
 
 
-def soft_delete_session(session_id: str):
-    client = get_client()
-    client.table("sessions").update(
+def soft_delete_session(session_id: str, student_id: str):
+    get_service_client().table("sessions").update(
         {"deleted_at": "now()"}
-    ).eq("id", session_id).execute()
+    ).eq("id", session_id).eq("student_id", student_id).execute()
+
+
+def get_today_skip_count(student_id: str) -> int:
+    import datetime as _dt
+    today = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
+    response = (
+        get_client()
+        .table("sessions")
+        .select("id", count="exact")
+        .eq("student_id", student_id)
+        .not_.is_("deleted_at", "null")
+        .gte("deleted_at", today)
+        .execute()
+    )
+    return response.count or 0
 
 
 def get_active_session(student_id: str) -> dict | None:
@@ -202,8 +215,7 @@ def save_session_response(
     feedback: str,
     is_correct: bool | None,
 ):
-    client = get_client()
-    client.table("session_responses").insert(
+    get_service_client().table("session_responses").insert(
         {
             "session_id": session_id,
             "step": step,
