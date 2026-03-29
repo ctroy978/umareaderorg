@@ -43,6 +43,21 @@ def upsert_profile(user_id: str, data: dict, access_token: str | None = None):
     get_service_client().table("profiles").upsert(payload, on_conflict="user_id").execute()
 
 
+def list_all_users() -> list[dict]:
+    """Return all auth users as list of dicts with 'id', 'email', 'full_name'."""
+    client = get_service_client()
+    response = client.auth.admin.list_users()
+    users = response if isinstance(response, list) else getattr(response, 'users', [])
+    result = []
+    for u in users:
+        email = getattr(u, 'email', None) or ''
+        full_name = ''
+        meta = getattr(u, 'user_metadata', {}) or {}
+        full_name = meta.get('full_name') or meta.get('name') or ''
+        result.append({'id': getattr(u, 'id', ''), 'email': email, 'full_name': full_name})
+    return result
+
+
 def get_placement_progress(user_id: str, access_token: str | None = None):
     client = _authed_client(access_token) if access_token else get_client()
     response = client.table("placement_progress").select("*").eq("user_id", user_id).maybe_single().execute()
