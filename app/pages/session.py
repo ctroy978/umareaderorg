@@ -117,7 +117,17 @@ async def session_page():
         except Exception:
             pass
 
-    def _save_response(step, prompt, answer, feedback, is_correct):
+    def _compute_rubric_score(quality: str, attempt_count: int) -> int:
+        if quality == 'nonsense':
+            return 1
+        if quality == 'poor':
+            return 2
+        if quality == 'moderate':
+            return 3
+        # good: 5 on first attempt, 4 if a second attempt was needed
+        return 5 if attempt_count == 1 else 4
+
+    def _save_response(step, prompt, answer, feedback, is_correct, rubric_score=None):
         record = {
             'step': step,
             'prompt': prompt,
@@ -128,7 +138,8 @@ async def session_page():
         state['responses'].append(record)
         try:
             save_session_response(
-                state['session_id'], step, prompt, answer, feedback, is_correct
+                state['session_id'], step, prompt, answer, feedback, is_correct,
+                rubric_score=rubric_score,
             )
         except Exception:
             pass
@@ -543,7 +554,7 @@ async def session_page():
 
                 feedback_col = ui.column().classes('w-full gap-2 hidden')
 
-                attempt = {'count': 0, 'first_answer': None}
+                attempt = {'count': 0, 'first_answer': None, 'quality': 'moderate'}
 
                 def _on_submit_reading():
                     if not answer_input.value.strip():
@@ -565,7 +576,7 @@ async def session_page():
             is_retry = attempt['count'] > 1
 
             loop = asyncio.get_event_loop()
-            feedback_text = await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None,
                 lambda: get_feedback(
                     'comprehension',
@@ -576,6 +587,8 @@ async def session_page():
                     student_response=student_response,
                 ),
             )
+            feedback_text = result['feedback']
+            attempt['quality'] = result['quality']
             spinner_row.classes(add='hidden')
             feedback_col.clear()
             feedback_col.classes(remove='hidden')
@@ -596,7 +609,8 @@ async def session_page():
                             combined = f"[Attempt 1] {attempt['first_answer']}\n\n[Attempt 2] {sr}"
                         else:
                             combined = sr
-                        _save_response('reading_pause', prompt_text, combined, fb, None)
+                        score = _compute_rubric_score(attempt['quality'], attempt['count'])
+                        _save_response('reading_pause', prompt_text, combined, fb, None, rubric_score=score)
                         _advance_reading(prompt_text, fb, combined)
 
                     ui.button(
@@ -650,7 +664,7 @@ async def session_page():
                 feedback_col = ui.column().classes('w-full gap-2 hidden')
                 reflection_col = ui.column().classes('w-full gap-3 hidden')
 
-                attempt = {'count': 0, 'first_answer': None}
+                attempt = {'count': 0, 'first_answer': None, 'quality': 'moderate'}
 
                 gist_btn = ui.button('Submit Summary', on_click=lambda: submit_gist()).props('color=primary')
 
@@ -670,7 +684,7 @@ async def session_page():
                     is_retry = attempt['count'] > 1
 
                     loop = asyncio.get_event_loop()
-                    feedback_text = await loop.run_in_executor(
+                    result = await loop.run_in_executor(
                         None,
                         lambda: get_feedback(
                             'gist',
@@ -679,6 +693,8 @@ async def session_page():
                             student_gist=gist_text,
                         ),
                     )
+                    feedback_text = result['feedback']
+                    attempt['quality'] = result['quality']
                     update_progress(2, 0.5)
                     spinner_row.classes(add='hidden')
                     feedback_col.clear()
@@ -697,13 +713,15 @@ async def session_page():
 
                                 def _show_reflection(fb=feedback_text, gt=gist_text):
                                     state['_last_gist'] = gt
-                                    _save_response('gist', 'Gist summary', gt, fb, None)
+                                    score = _compute_rubric_score(attempt['quality'], attempt['count'])
+                                    _save_response('gist', 'Gist summary', gt, fb, None, rubric_score=score)
                                     reflection_col.classes(remove='hidden')
                                 ui.button('Continue', on_click=_show_reflection).props('color=primary')
                         else:
                             combined = f"[Attempt 1] {attempt['first_answer']}\n\n[Attempt 2] {gist_text}"
                             state['_last_gist'] = gist_text
-                            _save_response('gist', 'Gist summary', combined, feedback_text, None)
+                            score = _compute_rubric_score(attempt['quality'], attempt['count'])
+                            _save_response('gist', 'Gist summary', combined, feedback_text, None, rubric_score=score)
                             reflection_col.classes(remove='hidden')
 
                 with reflection_col:
@@ -715,7 +733,7 @@ async def session_page():
 
                     def advance_from_reflection():
                         if reflection_input.value.strip():
-                            _save_response('gist', reflection_question, reflection_input.value, '', None)
+                            _save_response('gist_reflection', reflection_question, reflection_input.value, '', None)
                         _go_to_step(3)
 
                     ui.button('Continue →', on_click=advance_from_reflection, icon='arrow_forward').props('color=primary')
@@ -782,7 +800,7 @@ async def session_page():
 
                 else:  # short_answer
                     text_input = ui.textarea(placeholder='Write your answer here…').classes('w-full')
-                    sa_attempt = {'count': 0, 'first_answer': None}
+                    sa_attempt = {'count': 0, 'first_answer': None, 'quality': 'moderate'}
 
                     sa_btn = ui.button('Submit Answer', on_click=lambda: submit_sa()).props('color=primary')
 
@@ -802,7 +820,7 @@ async def session_page():
                         is_retry = sa_attempt['count'] > 1
 
                         loop = asyncio.get_event_loop()
-                        feedback_text = await loop.run_in_executor(
+                        result = await loop.run_in_executor(
                             None,
                             lambda: get_feedback(
                                 'mastery_sa',
@@ -813,6 +831,8 @@ async def session_page():
                                 student_answer=answer,
                             ),
                         )
+                        feedback_text = result['feedback']
+                        sa_attempt['quality'] = result['quality']
                         sp.classes(add='hidden')
                         fb.clear()
                         fb.classes(remove='hidden')
@@ -835,7 +855,8 @@ async def session_page():
                                         combined = f"[Attempt 1] {sa_attempt['first_answer']}\n\n[Attempt 2] {ans}"
                                     else:
                                         combined = ans
-                                    _save_response('mastery', q['text'], combined, fb_text, None)
+                                    score = _compute_rubric_score(sa_attempt['quality'], sa_attempt['count'])
+                                    _save_response('mastery', q['text'], combined, fb_text, None, rubric_score=score)
                                     _advance_mastery(q, None, fb_text, combined)
 
                                 ui.button(label, on_click=_continue_sa).props('color=primary')

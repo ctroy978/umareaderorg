@@ -229,6 +229,7 @@ def save_session_response(
     answer: str,
     feedback: str,
     is_correct: bool | None,
+    rubric_score: int | None = None,
 ):
     get_service_client().table("session_responses").insert(
         {
@@ -238,6 +239,7 @@ def save_session_response(
             "student_answer": answer,
             "feedback_text": feedback,
             "is_correct": is_correct,
+            "rubric_score": rubric_score,
         }
     ).execute()
 
@@ -273,7 +275,7 @@ def log_agent_run(
 
 
 def get_session_responses(session_id: str) -> list[dict]:
-    client = get_client()
+    client = get_service_client()
     resp = client.table("session_responses").select("*").eq("session_id", session_id).execute()
     return resp.data or []
 

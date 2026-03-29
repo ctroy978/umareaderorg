@@ -55,14 +55,30 @@ def run_level_adjustment(
 ) -> bool:
     """Update current_level and possibly reading_level after a completed session.
 
+    Scoring is based on open-ended questions only (reading_pause, gist summary,
+    mastery short-answer). Vocab and mastery MC are excluded. Requires at least
+    80% of scoreable questions to have a rubric_score before adjusting.
+
     Returns True if the reading_level band changed, False otherwise.
     """
     responses = get_session_responses(session_id)
-    scored = [r for r in responses if r.get("is_correct") is not None]
-    if not scored:
+
+    # Scoreable: reading_pause, gist summary (not gist_reflection), mastery short-answer (is_correct=None)
+    scoreable = [
+        r for r in responses
+        if r["step"] in ("reading_pause", "gist")
+        or (r["step"] == "mastery" and r.get("is_correct") is None)
+    ]
+
+    if not scoreable:
         return False
 
-    accuracy = sum(1 for r in scored if r["is_correct"]) / len(scored)
+    scored = [r for r in scoreable if r.get("rubric_score") is not None]
+    if len(scored) / len(scoreable) < 0.80:
+        return False
+
+    avg_rubric = sum(r["rubric_score"] for r in scored) / len(scored)
+    accuracy = avg_rubric / 5.0
 
     current_band = (profile or {}).get("reading_level", "800L")
     current = (profile or {}).get("current_level") or float(BAND_BASES.get(current_band, 800))

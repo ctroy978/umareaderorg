@@ -5,6 +5,8 @@ Feedback tone: calm and professional coaching voice. Supports a two-attempt flow
 where first-attempt feedback offers a try-again option and second-attempt feedback
 ends with a continue prompt.
 """
+import json
+
 from agents.llm import get_feedback_llm
 
 _SYSTEM_PROMPT = """You are a patient, encouraging reading comprehension coach for middle and high-school students.
@@ -18,7 +20,7 @@ Core rules:
 Two-attempt system — behavior depends on whether this is the first or second attempt:
 
 FIRST ATTEMPT (is_retry=False):
-- Maximum 60 words.
+- Maximum 60 words for the feedback field.
 - NEVER state, paraphrase, or model the correct answer. Do not write any sentence the student could copy.
 - NEVER use phrases like "the main idea is...", "try saying...", or "a better answer would be...".
 - Structure:
@@ -31,13 +33,27 @@ FIRST ATTEMPT (is_retry=False):
   3. End with: "Want to try again, or continue?"
 
 SECOND ATTEMPT (is_retry=True):
-- Maximum 90 words.
+- Maximum 90 words for the feedback field.
 - Now give a clear, complete explanation — the student has earned it after two tries.
 - Structure:
   1. One brief acknowledgment of what they got right across both attempts.
   2. Explain what the correct answer is and why, in plain language. Reference 1–2 specific sentences or details from the passage to show the evidence.
   3. Keep the tone encouraging — frame it as "here's what the passage was showing" rather than "you were wrong."
   4. End with a forward-looking phrase like "Nice effort — let's keep going."
+
+OUTPUT FORMAT — you must always respond with a JSON object and nothing else:
+{
+  "feedback": "<your coaching response following the rules above>",
+  "quality": "<one of: good, moderate, poor, nonsense>"
+}
+
+Quality definitions (assess the student's answer, not their effort):
+- good: answer clearly addresses the question and demonstrates genuine comprehension
+- moderate: answer partially addresses the question, shows some understanding but misses key points
+- poor: answer shows limited comprehension, misses the core idea
+- nonsense: off-topic, "I don't know", refuses to engage, or clearly irrelevant
+
+Output ONLY the JSON object. No other text before or after it.
 """
 
 _TEMPLATES = {
@@ -71,7 +87,7 @@ Give feedback on this short answer response.""",
 }
 
 
-def get_feedback(feedback_type: str, is_retry: bool = False, **context) -> str:
+def get_feedback(feedback_type: str, is_retry: bool = False, **context) -> dict:
     """
     Get feedback for a student response.
 
@@ -79,7 +95,10 @@ def get_feedback(feedback_type: str, is_retry: bool = False, **context) -> str:
     is_retry: True if this is the student's second attempt on this question
     context: keyword args matching the template placeholders for the given type
 
-    Returns plain text feedback string. Falls back to a neutral message on error.
+    Returns a dict with keys:
+      'feedback' (str): coaching text to display to the student
+      'quality'  (str): one of 'good', 'moderate', 'poor', 'nonsense' — used for rubric scoring
+    Falls back to a neutral message with quality='moderate' on error.
     """
     try:
         template = _TEMPLATES[feedback_type]
@@ -93,6 +112,11 @@ def get_feedback(feedback_type: str, is_retry: bool = False, **context) -> str:
             {"role": "user", "content": user_msg},
         ]
         response = llm.invoke(messages)
-        return response.content.strip()
+        raw = response.content.strip()
+        parsed = json.loads(raw)
+        quality = parsed.get("quality", "moderate")
+        if quality not in ("good", "moderate", "poor", "nonsense"):
+            quality = "moderate"
+        return {"feedback": parsed.get("feedback", "Your response has been recorded."), "quality": quality}
     except Exception:
-        return "Your response has been recorded."
+        return {"feedback": "Your response has been recorded.", "quality": "moderate"}
