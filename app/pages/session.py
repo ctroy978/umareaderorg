@@ -24,7 +24,7 @@ from app.supabase_client import (
 from agents.tools.bundle_generator import generate_session_bundle
 from agents.tools.feedback_tool import get_feedback
 from utils.config import DEFAULT_STRATEGY  # dev override; None in production
-from utils.session_code import generate_completion_code, score_to_level, RANK_TITLES, RANK_FEEDBACK
+from utils.session_code import generate_completion_code, score_to_level, RANK_TITLES, RANK_FEEDBACK, RANK_BLURBS
 
 TOTAL_STEPS = 4
 STEP_LABELS = ["Vocab Preview", "Supported Reading", "Gist & Reflection", "Mastery Check"]
@@ -874,30 +874,11 @@ async def session_page():
 
         with content_area:
             with ui.column().classes('items-center w-full gap-6 py-8'):
-                ui.icon('emoji_events', size='4rem').classes('text-yellow-500')
+                ui.label('⚔️').style('font-size: 5rem; line-height: 1;')
                 ui.label('Session Complete!').classes('text-3xl font-bold text-center')
                 if band_changed:
                     ui.label('Level up!').classes('text-green-600 font-semibold text-lg text-center')
                 ui.label('You finished the full reading session.').classes('text-gray-600 text-center text-lg')
-
-                if total_mc > 0:
-                    with ui.card().classes('w-full p-4 text-center gap-1'):
-                        ui.label('Mastery Score').classes('text-xs text-gray-400 uppercase tracking-wide')
-                        ui.label(f'{correct_count}/{total_mc}').classes('text-3xl font-bold text-primary')
-
-                with ui.card().classes('w-full p-4 text-center gap-2'):
-                    ui.label('Show your teacher this code').classes('text-xs text-gray-400 uppercase tracking-wide')
-                    ui.input(value=completion_code).props('readonly outlined dense').classes(
-                        'text-center font-mono text-xl font-bold w-full'
-                    )
-                    ui.button(
-                        'Copy Code',
-                        icon='content_copy',
-                        on_click=lambda: (
-                            ui.run_javascript(f"navigator.clipboard.writeText('{completion_code}')"),
-                            ui.notify('Code copied!', type='positive'),
-                        ),
-                    ).props('flat color=primary')
 
                 with ui.card().classes('w-full p-4 gap-1'):
                     ui.label('Session Rank').classes('text-xs text-gray-400 uppercase tracking-wide text-center')
@@ -916,6 +897,21 @@ async def session_page():
                                 ui.label(title).classes('text-gray-400 text-base')
                     ui.separator()
                     ui.label(RANK_FEEDBACK[earned_level]).classes('text-sm text-center text-gray-600 pt-1')
+                    ui.label(RANK_BLURBS[earned_level]).classes('text-xs text-center text-gray-400 italic pt-1')
+
+                with ui.card().classes('w-full p-4 text-center gap-2'):
+                    ui.label('Show your teacher this code').classes('text-xs text-gray-400 uppercase tracking-wide')
+                    ui.input(value=completion_code).props('readonly outlined dense').classes(
+                        'text-center font-mono text-xl font-bold w-full'
+                    )
+                    ui.button(
+                        'Copy Code',
+                        icon='content_copy',
+                        on_click=lambda: (
+                            ui.run_javascript(f"navigator.clipboard.writeText('{completion_code}')"),
+                            ui.notify('Code copied!', type='positive'),
+                        ),
+                    ).props('flat color=primary')
 
                 ui.label('Next session: Something new awaits!').classes(
                     'text-sm text-gray-400 italic text-center'

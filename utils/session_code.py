@@ -38,6 +38,13 @@ RANK_FEEDBACK = {
     4: "Excellent work today.",
 }
 
+RANK_BLURBS = {
+    1: "Ashigaru were the steadfast foot soldiers who formed the backbone of every army.",
+    2: "Samurai were professional warriors who trained rigorously and lived by a code of discipline.",
+    3: "Hatamoto served as elite bannermen, trusted directly by the shogun for their loyalty and skill.",
+    4: "Daimyo were powerful feudal lords who commanded respect through leadership and strategic mastery.",
+}
+
 
 def score_to_level(mastery_score: Optional[float]) -> int:
     if mastery_score is None:
