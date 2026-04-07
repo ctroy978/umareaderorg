@@ -1,9 +1,8 @@
 """
 Single direct LLM call for in-session feedback. No graph, no judge, no retry loop.
 
-Feedback tone: calm and professional coaching voice. Supports a two-attempt flow
-where first-attempt feedback offers a try-again option and second-attempt feedback
-ends with a continue prompt.
+Feedback tone: calm and professional coaching voice. Gist section is single-attempt
+only (student works from memory, text is not available).
 """
 import json
 
@@ -17,29 +16,22 @@ Core rules:
 - Tone: calm, clear, and supportive — like a trusted teacher. Restrained praise only (one specific positive comment per response, never excessive).
 - Vary question types across a session (main idea, key detail, inference, vocabulary in context).
 
-Two-attempt system — behavior depends on whether this is the first or second attempt:
-
-FIRST ATTEMPT (is_retry=False):
-- Maximum 60 words for the feedback field.
+GIST SUMMARY FEEDBACK (single attempt — student is working from memory, text is not available):
+- Maximum 75 words for the feedback field.
+- NEVER suggest the student reread the text, go back, look back, or review the passage. The text is not available to them. Do not use phrases like "reread", "go back to", "look back at", "review the passage", or any equivalent.
 - NEVER state, paraphrase, or model the correct answer. Do not write any sentence the student could copy.
 - NEVER use phrases like "the main idea is...", "try saying...", or "a better answer would be...".
-- Structure:
-  1. One brief, specific positive comment on what the student got right.
-  2. ONE targeted hint using exactly one strategy:
-     - Quote 1–2 key sentences from the passage and ask what bigger point they support.
-     - Ask 1–2 guiding questions that direct attention to central evidence without answering them.
-     - Note one element they missed without revealing it (e.g., "You identified the conditions, but the passage also explains *how* — reread that section").
-     - Point to what the passage spends the most time on and ask how it connects to the opening idea.
-  3. End with: "Want to try again, or continue?"
+- First assess quality, then write feedback based on that quality:
+  - good: One specific comment affirming what the student captured well. End with "Nice effort — let's keep going." Do NOT add a hint or probing question — the summary is complete.
+  - moderate or poor: (1) One brief positive comment on what the student got right. (2) ONE targeted hint using exactly one strategy: quote 1–2 key sentences and ask what bigger point they support; ask 1–2 guiding questions directing attention to central evidence; note one missed element without revealing it; or point to what the passage spends the most time on and ask how it connects to the opening idea. (3) End with "Nice effort — let's keep going."
+  - nonsense: Gently redirect them to summarize what they remember from the passage, without judgment.
 
-SECOND ATTEMPT (is_retry=True):
-- Maximum 90 words for the feedback field.
-- Now give a clear, complete explanation — the student has earned it after two tries.
-- Structure:
-  1. One brief acknowledgment of what they got right across both attempts.
-  2. Explain what the correct answer is and why, in plain language. Reference 1–2 specific sentences or details from the passage to show the evidence.
-  3. Keep the tone encouraging — frame it as "here's what the passage was showing" rather than "you were wrong."
-  4. End with a forward-looking phrase like "Nice effort — let's keep going."
+COMPREHENSION AND SHORT-ANSWER FEEDBACK (may have text available):
+- Maximum 70 words for the feedback field.
+- First assess quality, then write feedback based on that quality:
+  - good: One specific comment affirming what the student captured. End with a brief forward-looking phrase like "Nice work — let's keep going." Do NOT add a probing question or hint — the answer is complete.
+  - moderate or poor: (1) One brief positive comment on what the student got right. (2) ONE targeted guiding question pointing toward what they missed, without revealing the answer. (3) End with "Want to try again, or continue?"
+  - nonsense: Gently redirect them to the question and passage without judgment.
 
 OUTPUT FORMAT — you must always respond with a JSON object and nothing else:
 {
@@ -103,8 +95,10 @@ def get_feedback(feedback_type: str, is_retry: bool = False, **context) -> dict:
     try:
         template = _TEMPLATES[feedback_type]
         user_msg = template.format(**context)
-        if is_retry:
-            user_msg += "\n\nThis is the student's SECOND attempt. Apply the SECOND ATTEMPT rules from your instructions."
+        if feedback_type == 'gist':
+            user_msg += "\n\nIMPORTANT: The student cannot see the passage. Do NOT suggest rereading. Apply the GIST SUMMARY FEEDBACK rules."
+        elif is_retry:
+            user_msg += "\n\nThis is the student's SECOND and final attempt. Apply the COMPREHENSION AND SHORT-ANSWER FEEDBACK rules, but end with a forward-looking phrase like 'Nice effort — let\\'s keep going.' instead of 'Want to try again, or continue?' — the student has no more tries."
 
         llm = get_feedback_llm()
         messages = [
@@ -119,4 +113,4 @@ def get_feedback(feedback_type: str, is_retry: bool = False, **context) -> dict:
             quality = "moderate"
         return {"feedback": parsed.get("feedback", "Your response has been recorded."), "quality": quality}
     except Exception:
-        return {"feedback": "Your response has been recorded.", "quality": "moderate"}
+        raise

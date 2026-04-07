@@ -6,7 +6,6 @@ Called directly as a Python function from session.py (blocking, run in executor)
 import time
 
 from app.supabase_client import log_agent_run
-from app.data.session_content import READING_PAUSE_PROMPTS
 
 _graph = None
 
@@ -36,7 +35,7 @@ def coach_comprehension_pause(
     Returns:
         {prompt, feedback, is_strong, evidence_snippet, rationale}
 
-    Falls back to READING_PAUSE_PROMPTS[0] fields on any exception.
+    Raises on any exception after logging the error.
     """
     start = time.monotonic()
     mode = "evaluate" if student_response is not None else "generate"
@@ -110,12 +109,4 @@ def coach_comprehension_pause(
         except Exception:
             pass
 
-        # Fallback to first dummy pause prompt
-        fallback = READING_PAUSE_PROMPTS[0]
-        return {
-            "prompt": fallback["prompt_text"],
-            "feedback": fallback["dummy_feedback_good"],
-            "is_strong": True,
-            "evidence_snippet": "",
-            "rationale": f"Fallback due to error: {exc}",
-        }
+        raise

@@ -254,6 +254,21 @@ async def session_page():
                 ui.label('Please try again with a different topic.').classes('text-gray-500 text-center')
                 ui.button('Try Again', on_click=render_topic_picker).props('color=primary')
 
+    def _show_ai_error():
+        content_area.clear()
+        with content_area:
+            with ui.column().classes('items-center w-full gap-6 py-8'):
+                ui.icon('wifi_off', size='3rem').classes('text-red-400')
+                ui.label('AI Unavailable').classes('text-2xl font-bold text-red-600')
+                ui.label(
+                    'The AI is not responding. Please try again at a later time.'
+                ).classes('text-gray-600 text-center')
+                ui.button(
+                    'Start Over',
+                    on_click=render_topic_picker,
+                    icon='refresh',
+                ).props('color=primary')
+
     # ── Step renderers ────────────────────────────────────────────────────────
 
     def render_vocab_step():
@@ -576,17 +591,22 @@ async def session_page():
             is_retry = attempt['count'] > 1
 
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: get_feedback(
-                    'comprehension',
-                    is_retry=is_retry,
-                    section_text=section['text'],
-                    question=prompt_text,
-                    rubric=rubric,
-                    student_response=student_response,
-                ),
-            )
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: get_feedback(
+                        'comprehension',
+                        is_retry=is_retry,
+                        section_text=section['text'],
+                        question=prompt_text,
+                        rubric=rubric,
+                        student_response=student_response,
+                    ),
+                )
+            except Exception:
+                spinner_row.classes(add='hidden')
+                _show_ai_error()
+                return
             feedback_text = result['feedback']
             attempt['quality'] = result['quality']
             spinner_row.classes(add='hidden')
@@ -664,7 +684,7 @@ async def session_page():
                 feedback_col = ui.column().classes('w-full gap-2 hidden')
                 reflection_col = ui.column().classes('w-full gap-3 hidden')
 
-                attempt = {'count': 0, 'first_answer': None, 'quality': 'moderate'}
+                attempt = {'quality': 'moderate'}
 
                 gist_btn = ui.button('Submit Summary', on_click=lambda: submit_gist()).props('color=primary')
 
@@ -678,21 +698,20 @@ async def session_page():
                     asyncio.create_task(_evaluate_gist(gist_input.value))
 
                 async def _evaluate_gist(gist_text: str):
-                    attempt['count'] += 1
-                    if attempt['count'] == 1:
-                        attempt['first_answer'] = gist_text
-                    is_retry = attempt['count'] > 1
-
                     loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(
-                        None,
-                        lambda: get_feedback(
-                            'gist',
-                            is_retry=is_retry,
-                            full_passage=full_passage,
-                            student_gist=gist_text,
-                        ),
-                    )
+                    try:
+                        result = await loop.run_in_executor(
+                            None,
+                            lambda: get_feedback(
+                                'gist',
+                                full_passage=full_passage,
+                                student_gist=gist_text,
+                            ),
+                        )
+                    except Exception:
+                        spinner_row.classes(add='hidden')
+                        _show_ai_error()
+                        return
                     feedback_text = result['feedback']
                     attempt['quality'] = result['quality']
                     update_progress(2, 0.5)
@@ -702,27 +721,13 @@ async def session_page():
                     with feedback_col:
                         with ui.element('div').classes('w-full rounded-lg bg-blue-50 p-4'):
                             ui.label(feedback_text).classes('text-base leading-relaxed text-gray-800')
-                        if attempt['count'] == 1:
-                            with ui.row().classes('gap-2 mt-2'):
-                                def _try_again():
-                                    gist_input.enable()
-                                    gist_input.set_value(attempt['first_answer'])
-                                    gist_btn.enable()
-                                    feedback_col.classes(add='hidden')
-                                ui.button('Try Again', on_click=_try_again).props('flat color=primary')
-
-                                def _show_reflection(fb=feedback_text, gt=gist_text):
-                                    state['_last_gist'] = gt
-                                    score = _compute_rubric_score(attempt['quality'], attempt['count'])
-                                    _save_response('gist', 'Gist summary', gt, fb, None, rubric_score=score)
-                                    reflection_col.classes(remove='hidden')
-                                ui.button('Continue', on_click=_show_reflection).props('color=primary')
-                        else:
-                            combined = f"[Attempt 1] {attempt['first_answer']}\n\n[Attempt 2] {gist_text}"
-                            state['_last_gist'] = gist_text
-                            score = _compute_rubric_score(attempt['quality'], attempt['count'])
-                            _save_response('gist', 'Gist summary', combined, feedback_text, None, rubric_score=score)
+                        def _show_reflection(fb=feedback_text, gt=gist_text):
+                            state['_last_gist'] = gt
+                            # Gist is single-attempt; always score as attempt 1
+                            score = _compute_rubric_score(attempt['quality'], 1)
+                            _save_response('gist', 'Gist summary', gt, fb, None, rubric_score=score)
                             reflection_col.classes(remove='hidden')
+                        ui.button('Continue →', on_click=_show_reflection, icon='arrow_forward').props('color=primary')
 
                 with reflection_col:
                     ui.separator()
@@ -820,17 +825,22 @@ async def session_page():
                         is_retry = sa_attempt['count'] > 1
 
                         loop = asyncio.get_event_loop()
-                        result = await loop.run_in_executor(
-                            None,
-                            lambda: get_feedback(
-                                'mastery_sa',
-                                is_retry=is_retry,
-                                question=q['text'],
-                                source_span=q.get('source_span', ''),
-                                key_points=q.get('key_points', []),
-                                student_answer=answer,
-                            ),
-                        )
+                        try:
+                            result = await loop.run_in_executor(
+                                None,
+                                lambda: get_feedback(
+                                    'mastery_sa',
+                                    is_retry=is_retry,
+                                    question=q['text'],
+                                    source_span=q.get('source_span', ''),
+                                    key_points=q.get('key_points', []),
+                                    student_answer=answer,
+                                ),
+                            )
+                        except Exception:
+                            sp.classes(add='hidden')
+                            _show_ai_error()
+                            return
                         feedback_text = result['feedback']
                         sa_attempt['quality'] = result['quality']
                         sp.classes(add='hidden')
