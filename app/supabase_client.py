@@ -139,7 +139,7 @@ def get_active_bundle(user_id: str) -> dict | None:
 
 def get_topic_from_bank(category: str, user_id: str) -> dict | None:
     """Return a random unused topic for this student in the given category, or None."""
-    client = get_client()
+    client = get_service_client()
     used_resp = (client.table("session_bundles")
                  .select("topic_bank_id")
                  .eq("user_id", user_id)

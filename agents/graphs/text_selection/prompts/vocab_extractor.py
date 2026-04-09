@@ -15,6 +15,7 @@ Requirements:
 - Choose words that are challenging but important for understanding the passage
 - Prefer discipline-specific or advanced general-academic vocabulary
 - Distractors must be plausible (related to the passage topic) but clearly wrong on reflection
+- ALL four choices must be similar in length — within about 5 words of each other. Do NOT write a long, detailed correct answer surrounded by short distractors; that gives away the answer. Match the correct definition's length and style when writing distractors.
 - feedback_correct and feedback_incorrect should reference the passage context
 - Place the correct choice at a DIFFERENT position for each word (vary correct_index across 0, 1, 2, 3 — do not default to 0)
 
