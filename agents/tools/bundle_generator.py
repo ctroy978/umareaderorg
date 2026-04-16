@@ -17,6 +17,9 @@ from app.supabase_client import (
     fail_session_bundle,
     get_available_strategies,
     get_recent_strategies,
+    get_library_entry,
+    save_library_entry,
+    increment_library_use_count,
 )
 from agents.tools.text_selection_tool import select_stretch_text_tool
 from agents.tools.comprehension_coach_tool import coach_comprehension_pause
@@ -71,6 +74,7 @@ def generate_session_bundle(
     topic: str,
     reading_level: str,
     access_token: str | None,
+    topic_bank_id: str | None = None,
 ) -> None:
     """
     Generate all session content upfront and persist it to the session_bundles row.
@@ -93,57 +97,99 @@ def generate_session_bundle(
             session_strategy = "Making Inferences"
         _log(f"step 0: strategy='{session_strategy}' in {time.monotonic()-t0:.1f}s")
 
-        # ── Step 1: passage + vocab (must complete before anything else) ──────
-        _log("step 1/3: text_selection starting")
-        t0 = time.monotonic()
-        content = select_stretch_text_tool(
-            student_id=user_id,
-            session_id=None,
-            access_token=access_token,
-            topic_override=topic,
-            strategy_hint=session_strategy,
-            strategy_chunk_index=_STRATEGY_CHUNK_INDEX,
-        )
-        sections = content["sections"]
-        title = content["title"]
-        vocab = content["vocab"]
-        topic_bank_id = content.get("topic_bank_id")
-        full_text = "\n\n".join(s["text"] for s in sections)
-        _log(
-            f"step 1/3: text_selection done in {time.monotonic()-t0:.1f}s"
-            f" — '{title}' ({len(sections)} sections, {len(vocab)} vocab)"
-        )
+        # ── Step 1: passage + vocab (check library cache first) ──────────────
+        library_hit = None
+        if topic_bank_id:
+            library_hit = get_library_entry(topic_bank_id, reading_level)
 
-        # ── Steps 2+3: comp_coach ×4 and mastery run in parallel ─────────────
-        _log("step 2+3: launching comp_coach ×4 and mastery in parallel")
+        if library_hit:
+            sections = library_hit["passage_sections"]
+            title = library_hit["passage_title"]
+            vocab = library_hit["vocab_questions"]
+            mastery_questions = library_hit["mastery_questions"]
+            full_text = "\n\n".join(s["text"] for s in sections)
+            increment_library_use_count(topic_bank_id, reading_level)
+            _log(f"step 1/3: CACHE HIT — '{title}' served from library (skipping AI generation)")
+        else:
+            _log("step 1/3: text_selection starting")
+            t0 = time.monotonic()
+            content = select_stretch_text_tool(
+                student_id=user_id,
+                session_id=None,
+                access_token=access_token,
+                topic_override=topic,
+                strategy_hint=session_strategy,
+                strategy_chunk_index=_STRATEGY_CHUNK_INDEX,
+            )
+            sections = content["sections"]
+            title = content["title"]
+            vocab = content["vocab"]
+            topic_bank_id = content.get("topic_bank_id")
+            full_text = "\n\n".join(s["text"] for s in sections)
+            _log(
+                f"step 1/3: text_selection done in {time.monotonic()-t0:.1f}s"
+                f" — '{title}' ({len(sections)} sections, {len(vocab)} vocab)"
+            )
+            mastery_questions = None
+
+        # ── Steps 2+3: comp_coach ×4 and (if needed) mastery in parallel ─────
+        _log("step 2+3: launching comp_coach ×4%s in parallel" % ("" if library_hit else " and mastery"))
         t0 = time.monotonic()
 
         comp_results = [None] * len(sections)
-        mastery_questions = None
 
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            # Submit comp_coach for each section; strategy chunk gets the session strategy
-            comp_futures = {
-                pool.submit(
-                    _run_comp_coach,
-                    i,
-                    section,
-                    session_strategy if i == _STRATEGY_CHUNK_INDEX else _COMP_STRATEGIES[i % len(_COMP_STRATEGIES)],
-                    reading_level,
-                    user_id,
-                    i == _STRATEGY_CHUNK_INDEX,
-                ): i
-                for i, section in enumerate(sections)
-            }
-            # Submit mastery generation
-            mastery_future = pool.submit(_run_mastery, full_text, reading_level, user_id)
+        if library_hit:
+            # Mastery already loaded from cache; only generate comp pauses
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                comp_futures = {
+                    pool.submit(
+                        _run_comp_coach,
+                        i,
+                        section,
+                        session_strategy if i == _STRATEGY_CHUNK_INDEX else _COMP_STRATEGIES[i % len(_COMP_STRATEGIES)],
+                        reading_level,
+                        user_id,
+                        i == _STRATEGY_CHUNK_INDEX,
+                    ): i
+                    for i, section in enumerate(sections)
+                }
+                for future in as_completed(comp_futures):
+                    idx = comp_futures[future]
+                    comp_results[idx] = future.result()
+        else:
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                # Submit comp_coach for each section; strategy chunk gets the session strategy
+                comp_futures = {
+                    pool.submit(
+                        _run_comp_coach,
+                        i,
+                        section,
+                        session_strategy if i == _STRATEGY_CHUNK_INDEX else _COMP_STRATEGIES[i % len(_COMP_STRATEGIES)],
+                        reading_level,
+                        user_id,
+                        i == _STRATEGY_CHUNK_INDEX,
+                    ): i
+                    for i, section in enumerate(sections)
+                }
+                # Submit mastery generation
+                mastery_future = pool.submit(_run_mastery, full_text, reading_level, user_id)
 
-            # Collect comp results in original section order
-            for future in as_completed(comp_futures):
-                idx = comp_futures[future]
-                comp_results[idx] = future.result()
+                # Collect comp results in original section order
+                for future in as_completed(comp_futures):
+                    idx = comp_futures[future]
+                    comp_results[idx] = future.result()
 
-            mastery_questions = mastery_future.result()
+                mastery_questions = mastery_future.result()
+
+            # Save to library for future sessions
+            if topic_bank_id:
+                try:
+                    save_library_entry(
+                        topic_bank_id, reading_level, title, sections, vocab, mastery_questions
+                    )
+                    _log(f"library: saved entry for topic_bank_id={topic_bank_id} level={reading_level}")
+                except Exception as e:
+                    _log(f"library: failed to save entry ({e}) — continuing")
 
         _log(f"step 2+3: parallel phase done in {time.monotonic()-t0:.1f}s")
 

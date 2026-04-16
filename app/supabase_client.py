@@ -139,6 +139,7 @@ def get_active_bundle(user_id: str) -> dict | None:
 
 def get_topic_from_bank(category: str, user_id: str) -> dict | None:
     """Return a random unused topic for this student in the given category, or None."""
+    import random
     client = get_service_client()
     used_resp = (client.table("session_bundles")
                  .select("topic_bank_id")
@@ -154,8 +155,54 @@ def get_topic_from_bank(category: str, user_id: str) -> dict | None:
 
     if not resp.data:
         return None
-    import random
+
     return random.choice(resp.data)
+
+
+# --- Passage library ---
+
+def get_library_entry(topic_bank_id: str, lexile_level: str) -> dict | None:
+    """Return cached passage content for (topic_bank_id, lexile_level), or None."""
+    resp = (get_service_client().table("passage_library")
+            .select("*")
+            .eq("topic_bank_id", topic_bank_id)
+            .eq("lexile_level", lexile_level)
+            .limit(1)
+            .execute())
+    return resp.data[0] if resp.data else None
+
+
+def save_library_entry(
+    topic_bank_id: str,
+    lexile_level: str,
+    passage_title: str,
+    passage_sections: list,
+    vocab_questions: list,
+    mastery_questions: list,
+) -> None:
+    """Upsert passage content into the library. Safe to call concurrently."""
+    get_service_client().table("passage_library").upsert(
+        {
+            "topic_bank_id": topic_bank_id,
+            "lexile_level": lexile_level,
+            "passage_title": passage_title,
+            "passage_sections": passage_sections,
+            "vocab_questions": vocab_questions,
+            "mastery_questions": mastery_questions,
+        },
+        on_conflict="topic_bank_id,lexile_level",
+    ).execute()
+
+
+def increment_library_use_count(topic_bank_id: str, lexile_level: str) -> None:
+    """Atomically increment use_count for a library entry."""
+    try:
+        get_service_client().rpc(
+            "increment_library_use_count",
+            {"p_topic_bank_id": topic_bank_id, "p_lexile_level": lexile_level},
+        ).execute()
+    except Exception:
+        pass  # non-critical
 
 
 # --- Session helpers ---

@@ -12,11 +12,13 @@ from app.supabase_client import (
     fail_session_bundle,
     get_active_bundle,
     get_active_session,
+    get_library_entry,
     get_profile,
     get_session_bundle,
     get_session_strategy,
     get_strategy_lesson,
     get_today_skip_count,
+    get_topic_from_bank,
     save_session_response,
     soft_delete_session,
     update_session_step,
@@ -199,32 +201,40 @@ async def session_page():
 
     # ── Loading screen ────────────────────────────────────────────────────────
 
-    def _show_loading_screen(topic: str):
+    def _show_loading_screen(topic: str, from_cache: bool = False):
         content_area.clear()
         with content_area:
             with ui.column().classes('items-center w-full gap-4 py-16'):
                 ui.spinner(size='xl')
                 ui.label('Preparing your session…').classes('text-gray-700 text-xl font-semibold text-center')
                 ui.label(f'Topic: {topic}').classes('text-gray-500 text-base text-center')
-                ui.label('This may take several minutes. You\'ll only wait once.').classes(
-                    'text-gray-400 text-sm text-center italic'
-                )
+                wait_msg = 'Loading your reading…' if from_cache else "This may take several minutes. You'll only wait once."
+                ui.label(wait_msg).classes('text-gray-400 text-sm text-center italic')
 
     # ── Topic selected → generate bundle ─────────────────────────────────────
 
     async def _on_topic_selected(topic: str):
-        bundle_id = create_session_bundle(user_id, topic)
-        state['bundle_id'] = bundle_id
-        _show_loading_screen(topic)
-
+        # Resolve profile and topic_bank_id before showing loading screen so we
+        # can check the library cache and show the correct wait message.
         profile = get_profile(user_id, access_token)
         reading_level = (profile or {}).get('reading_level', '800L')
         state['reading_level'] = reading_level
 
+        bank_row = get_topic_from_bank(topic, user_id)
+        topic_bank_id = bank_row["id"] if bank_row else None
+        from_cache = bool(topic_bank_id and get_library_entry(topic_bank_id, reading_level))
+
+        bundle_id = create_session_bundle(user_id, topic)
+        state['bundle_id'] = bundle_id
+        _show_loading_screen(topic, from_cache=from_cache)
+
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
-            lambda: generate_session_bundle(bundle_id, user_id, topic, reading_level, access_token),
+            lambda: generate_session_bundle(
+                bundle_id, user_id, topic, reading_level, access_token,
+                topic_bank_id=topic_bank_id,
+            ),
         )
 
         bundle = get_session_bundle(bundle_id)
