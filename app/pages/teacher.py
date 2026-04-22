@@ -1,6 +1,9 @@
+import csv
+import io
+
 from nicegui import app, ui
 
-from app.supabase_client import list_all_users
+from app.supabase_client import enroll_student, enroll_students_bulk, list_all_users
 from utils.config import SESSION_CODE_SECRET, TEACHER_EMAILS
 from utils.session_code import LEVEL_LABELS, _email_hash, _compute_hmac
 
@@ -97,8 +100,79 @@ async def teacher_page():
 
     with ui.column().classes('items-center w-full max-w-lg mx-auto p-8 gap-6'):
         with ui.row().classes('w-full items-center justify-between'):
-            ui.label('Decode Session Code').classes('text-2xl font-bold')
+            ui.label('Teacher Dashboard').classes('text-2xl font-bold')
             ui.button('Dashboard', icon='home', on_click=lambda: ui.navigate.to('/dashboard')).props('flat color=primary')
+
+        # --- Enrollment section ---
+        with ui.expansion('Enroll Students', icon='group_add').classes('w-full').props('default-opened'):
+            with ui.column().classes('w-full gap-4 pt-2'):
+
+                # Single enroll
+                ui.label('Add one student').classes('text-sm font-medium text-gray-600')
+                with ui.row().classes('w-full gap-2 items-start'):
+                    single_email = ui.input(placeholder='student@school.edu').props('outlined dense').classes('flex-1')
+                    single_name = ui.input(placeholder='Full name (optional)').props('outlined dense').classes('flex-1')
+                    single_status = ui.label('').classes('text-sm')
+
+                def add_one():
+                    email = single_email.value.strip().lower()
+                    if not email:
+                        single_status.set_text('Enter an email.')
+                        single_status.classes('text-red-500', remove='text-green-600')
+                        return
+                    enroll_student(email, single_name.value.strip())
+                    single_status.set_text(f'Added {email}')
+                    single_status.classes('text-green-600', remove='text-red-500')
+                    single_email.set_value('')
+                    single_name.set_value('')
+
+                ui.button('Add Student', on_click=add_one).props('color=primary dense')
+
+                ui.separator()
+
+                # CSV bulk enroll
+                ui.label('Bulk import via CSV').classes('text-sm font-medium text-gray-600')
+                ui.label('CSV format: one row per student. Columns: email  or  email,full_name').classes('text-xs text-gray-400')
+                csv_status = ui.label('').classes('text-sm')
+
+                def handle_upload(e):
+                    csv_status.set_text('')
+                    try:
+                        content = e.content.read().decode('utf-8-sig')
+                        reader = csv.reader(io.StringIO(content))
+                        students = []
+                        for row in reader:
+                            if not row:
+                                continue
+                            email = row[0].strip().lower()
+                            if not email or email == 'email':
+                                continue
+                            full_name = row[1].strip() if len(row) > 1 else ''
+                            students.append({'email': email, 'full_name': full_name})
+                        if not students:
+                            csv_status.set_text('No valid rows found in CSV.')
+                            csv_status.classes('text-red-500', remove='text-green-600')
+                            return
+                        result = enroll_students_bulk(students)
+                        csv_status.set_text(
+                            f"Done — {result['enrolled']} enrolled, {result['skipped']} already existed."
+                        )
+                        csv_status.classes('text-green-600', remove='text-red-500')
+                    except Exception as ex:
+                        csv_status.set_text(f'Error reading CSV: {ex}')
+                        csv_status.classes('text-red-500', remove='text-green-600')
+
+                ui.upload(
+                    label='Upload CSV',
+                    on_upload=handle_upload,
+                    auto_upload=True,
+                ).props('accept=.csv flat').classes('w-full')
+
+        ui.separator()
+
+        # --- Decode session code section ---
+        with ui.row().classes('w-full items-center justify-between'):
+            ui.label('Decode Session Code').classes('text-xl font-bold')
 
         ui.label(
             'Enter the code a student gave you to see their identity and performance level.'
